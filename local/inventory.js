@@ -60,32 +60,38 @@
   }
 
   // _append_log(inventory.py)の移植。
+  // dbGet→dbPutをdbUpdate()経由の直列化に変えている(audit-loop、2026-11-01の
+  // 監査で発覚: 在庫画面で複数商品の±ボタンを素早く連続操作すると、全商品
+  // 共通の全店舗分ログ1本("log"キー)への追記が後勝ちレースで消えうることを
+  // 確認した)。
   async function _appendLog(entry) {
-    var log = (await dbGet(LOG_STORE, LOG_KEY)) || [];
-    log.push(entry);
-    // 店舗ごとに直近1000件を保持する(全店舗合算キャップだと更新頻度の高い
-    // 店舗が少ない店舗のログを押し出して消してしまうバグがあったための対策
-    // ——Python版コメント参照。同じロジックを踏襲する)。
-    var byStore = {};
-    log.forEach(function (e) {
-      var key = e && e.store_id;
-      if (!byStore[key]) {
-        byStore[key] = [];
-      }
-      byStore[key].push(e);
+    await dbUpdate(LOG_STORE, LOG_KEY, async function (log) {
+      log = log || [];
+      log.push(entry);
+      // 店舗ごとに直近1000件を保持する(全店舗合算キャップだと更新頻度の高い
+      // 店舗が少ない店舗のログを押し出して消してしまうバグがあったための対策
+      // ——Python版コメント参照。同じロジックを踏襲する)。
+      var byStore = {};
+      log.forEach(function (e) {
+        var key = e && e.store_id;
+        if (!byStore[key]) {
+          byStore[key] = [];
+        }
+        byStore[key].push(e);
+      });
+      var trimmed = [];
+      Object.keys(byStore).forEach(function (key) {
+        trimmed = trimmed.concat(byStore[key].slice(-1000));
+      });
+      trimmed.sort(function (a, b) {
+        var ta = (a && a.ts) || "";
+        var tb = (b && b.ts) || "";
+        if (ta < tb) return -1;
+        if (ta > tb) return 1;
+        return 0;
+      });
+      return trimmed;
     });
-    var trimmed = [];
-    Object.keys(byStore).forEach(function (key) {
-      trimmed = trimmed.concat(byStore[key].slice(-1000));
-    });
-    trimmed.sort(function (a, b) {
-      var ta = (a && a.ts) || "";
-      var tb = (b && b.ts) || "";
-      if (ta < tb) return -1;
-      if (ta > tb) return 1;
-      return 0;
-    });
-    await dbPut(LOG_STORE, LOG_KEY, trimmed);
   }
 
   // get_inventory(inventory.py)の移植。
@@ -99,27 +105,35 @@
   }
 
   // update_stock(inventory.py)の移植。body: { stock: 2 }
+  //
+  // dbGet→dbPutをdbUpdate()経由の直列化に変えている(audit-loop、2026-11-01の
+  // 監査で発覚・再現シナリオあり: 在庫画面は商品ごとに+/-ボタンがあり、棚卸し中に
+  // 違う商品のボタンを連打すると、前の変更を待たず次のPUTが発火する
+  // [frontend/inventory.js::_setStockにデバウンス/キューが無い]。これが
+  // 後勝ちレースを起こし、片方の商品の在庫変更が消えていた)。
   async function updateStock(storeId, flavorId, body) {
     // 2026-10-30バグハントで指摘(Critical): store_idの検証が無かった
     // (他の書き込み系と同種の穴)。
     await checkStoreId(storeId);
-    var items = await dbGet(INVENTORY_STORE, storeId);
-    if (items === undefined) {
-      throw new ApiError(404, "store not found");
-    }
-    var target = items.find(function (f) {
-      return f && f.id === flavorId;
+
+    var oldStock, newStock, target;
+    await dbUpdate(INVENTORY_STORE, storeId, async function (items) {
+      if (items === undefined) {
+        throw new ApiError(404, "store not found");
+      }
+      target = items.find(function (f) {
+        return f && f.id === flavorId;
+      });
+      if (!target) {
+        throw new ApiError(404, "flavor not found");
+      }
+      oldStock = target.stock;
+      newStock = Math.max(0, _intOr(body && body.stock, target.stock));
+      target.stock = newStock;
+      return items;
     });
-    if (!target) {
-      throw new ApiError(404, "flavor not found");
-    }
 
-    var newStock = _intOr(body && body.stock, target.stock);
-    var oldStock = target.stock;
-    target.stock = Math.max(0, newStock);
-    await dbPut(INVENTORY_STORE, storeId, items);
-
-    if (oldStock !== target.stock) {
+    if (oldStock !== newStock) {
       await _appendLog({
         ts: new Date().toISOString().slice(0, 19),
         store_id: storeId,
@@ -127,11 +141,11 @@
         brand: target.brand || "",
         name: target.name || "",
         from_stock: oldStock,
-        to_stock: target.stock,
+        to_stock: newStock,
       });
     }
 
-    return { ok: true, stock: target.stock };
+    return { ok: true, stock: newStock };
   }
 
   // add_flavor(inventory.py)の移植。
@@ -148,42 +162,44 @@
     }
     var fid = _makeId(brand, name);
 
-    var items = await dbGet(INVENTORY_STORE, storeId);
-    if (items === undefined) {
-      items = [];
-    }
-    var dup = items.some(function (f) {
-      return f && f.id === fid;
+    await dbUpdate(INVENTORY_STORE, storeId, async function (items) {
+      if (items === undefined) {
+        items = [];
+      }
+      var dup = items.some(function (f) {
+        return f && f.id === fid;
+      });
+      if (dup) {
+        throw new ApiError(409, "already exists");
+      }
+      items.push({
+        id: fid,
+        brand: brand,
+        name: name,
+        stock: _intOr(body && body.stock, 0),
+        min_stock: _intOr(body && body.min_stock, 1),
+      });
+      return items;
     });
-    if (dup) {
-      throw new ApiError(409, "already exists");
-    }
-    items.push({
-      id: fid,
-      brand: brand,
-      name: name,
-      stock: _intOr(body && body.stock, 0),
-      min_stock: _intOr(body && body.min_stock, 1),
-    });
-    await dbPut(INVENTORY_STORE, storeId, items);
     return { ok: true, id: fid };
   }
 
   // delete_flavor(inventory.py)の移植。
   async function deleteFlavor(storeId, flavorId) {
     await checkStoreId(storeId);
-    var items = await dbGet(INVENTORY_STORE, storeId);
-    if (items === undefined) {
-      throw new ApiError(404, "store not found");
-    }
-    var before = items.length;
-    var filtered = items.filter(function (f) {
-      return !(f && f.id === flavorId);
+    await dbUpdate(INVENTORY_STORE, storeId, async function (items) {
+      if (items === undefined) {
+        throw new ApiError(404, "store not found");
+      }
+      var before = items.length;
+      var filtered = items.filter(function (f) {
+        return !(f && f.id === flavorId);
+      });
+      if (filtered.length === before) {
+        throw new ApiError(404, "flavor not found");
+      }
+      return filtered;
     });
-    if (filtered.length === before) {
-      throw new ApiError(404, "flavor not found");
-    }
-    await dbPut(INVENTORY_STORE, storeId, filtered);
     return { ok: true };
   }
 

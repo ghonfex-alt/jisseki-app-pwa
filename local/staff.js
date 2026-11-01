@@ -125,57 +125,82 @@
       }
     }
 
-    var staff = await dbGet(STAFF_STORE, staffId);
-    if (staff === undefined) {
-      throw new ApiError(404, "staff not found");
-    }
-    _assertNotCorrupted(staff);
+    // dbGet→dbPutをdbUpdate()経由の直列化に変えている(audit-loop、2026-11-01の
+    // 監査で発覚: 同一スタッフの複数フィールドを連続編集するUI操作[例: 名前欄→
+    // 時給欄とTabで移動]が後勝ちレースを起こし、片方の変更が消えうることを
+    // 確認した。local/settings.jsで実際に発生した事故と同じ原因・同じ直し方)。
+    return dbUpdate(STAFF_STORE, staffId, async function (staff) {
+      if (staff === undefined) {
+        throw new ApiError(404, "staff not found");
+      }
+      _assertNotCorrupted(staff);
 
-    if ("rate_history" in cleanBody && Array.isArray(cleanBody.rate_history)) {
-      // rate_historyは全体置換のため、送信された配列に既存のロック済み月の
-      // 履歴(変更なし)が1件でも含まれているだけで全体を拒否すると、一度でも
-      // 時給改定した月がロックされた全スタッフが今後永久に新しい時給改定を
-      // 登録できなくなる(2026-08-06のレビューで発見したfalse positive)。
-      // 既存と完全一致するエントリは対象外にし、新規追加・変更されたエントリ
-      // だけをロック判定する(staff.py参照)。
-      var existingRh = staff.rate_history || [];
-      var existingSet = new Set(
-        existingRh
-          .filter(function (e) {
-            return e && typeof e === "object";
-          })
-          .map(function (e) {
-            return e.from + "|" + e.rate;
-          })
-      );
-      for (var j = 0; j < cleanBody.rate_history.length; j++) {
-        var rh = cleanBody.rate_history[j];
-        if (!rh || typeof rh !== "object") {
-          continue;
-        }
-        var sig = rh.from + "|" + rh.rate;
-        if (existingSet.has(sig)) {
-          continue; // 既存のまま変更されていないエントリはロック判定しない
-        }
-        var from = rh.from || "";
-        if (from.length >= 7) {
-          var y = parseInt(from.slice(0, 4), 10);
-          var m = parseInt(from.slice(5, 7), 10);
-          if (!Number.isNaN(y) && !Number.isNaN(m)) {
-            if (_isLocked(y, m)) {
+      if ("rate_history" in cleanBody && Array.isArray(cleanBody.rate_history)) {
+        // rate_historyは全体置換のため、送信された配列に既存のロック済み月の
+        // 履歴(変更なし)が1件でも含まれているだけで全体を拒否すると、一度でも
+        // 時給改定した月がロックされた全スタッフが今後永久に新しい時給改定を
+        // 登録できなくなる(2026-08-06のレビューで発見したfalse positive)。
+        // 既存と完全一致するエントリは対象外にし、新規追加・変更されたエントリ
+        // だけをロック判定する(staff.py参照)。
+        var existingRh = staff.rate_history || [];
+        var newRh = cleanBody.rate_history;
+
+        var sigOf = function (e) {
+          return e.from + "|" + e.rate;
+        };
+        var newSet = new Set(
+          newRh.filter(function (e) { return e && typeof e === "object"; }).map(sigOf)
+        );
+        var existingSet = new Set(
+          existingRh.filter(function (e) { return e && typeof e === "object"; }).map(sigOf)
+        );
+
+        var checkLockForFrom = function (from) {
+          if (from && from.length >= 7) {
+            var y = parseInt(from.slice(0, 4), 10);
+            var m = parseInt(from.slice(5, 7), 10);
+            if (!Number.isNaN(y) && !Number.isNaN(m) && _isLocked(y, m)) {
               throw new ApiError(
                 423,
-                y + "年" + m + "月は給与確定済みのため、この月の時給改定は追加できません"
+                y + "年" + m + "月は給与確定済みのため、この月の時給改定は変更できません"
               );
             }
           }
+        };
+
+        for (var j = 0; j < newRh.length; j++) {
+          var rh = newRh[j];
+          if (!rh || typeof rh !== "object") {
+            continue;
+          }
+          if (existingSet.has(sigOf(rh))) {
+            continue; // 既存のまま変更されていないエントリはロック判定しない
+          }
+          checkLockForFrom(rh.from || "");
+        }
+
+        // audit-loop(2026-11-01)で発見・実際に再現確認済み(Critical):
+        // 上のループは新しい配列に残っているエントリしか見ておらず、
+        // ロック済み月の既存エントリを配列から単純に取り除く(削除する)操作は
+        // ノーチェックで通ってしまい423を回避できた。削除すると、その月以降の
+        // 未ロック月の実効時給がstaff.hourly_rateへ静かに戻ってしまう実害が
+        // あるため、既存にあって新しい配列に無い(=削除された)エントリも
+        // 同様にロック判定する。
+        for (var k = 0; k < existingRh.length; k++) {
+          var old = existingRh[k];
+          if (!old || typeof old !== "object") {
+            continue;
+          }
+          if (newSet.has(sigOf(old))) {
+            continue; // 残っている(削除されていない)
+          }
+          checkLockForFrom(old.from || "");
         }
       }
-    }
 
-    Object.assign(staff, cleanBody);
-    await dbPut(STAFF_STORE, staffId, staff);
-    return staff;
+      Object.assign(staff, cleanBody);
+      return staff;
+    });
   }
 
   // delete_staff(staff.py)の移植。ソフト削除(active=falseにするだけで削除しない)。
@@ -183,13 +208,14 @@
   // 参照し続けるため、実削除すると過去月の表示・給与計算が参照切れになる
   // (staff.py参照)。
   async function deleteStaff(staffId) {
-    var staff = await dbGet(STAFF_STORE, staffId);
-    if (staff === undefined) {
-      throw new ApiError(404, "staff not found");
-    }
-    _assertNotCorrupted(staff);
-    staff.active = false;
-    await dbPut(STAFF_STORE, staffId, staff);
+    await dbUpdate(STAFF_STORE, staffId, async function (staff) {
+      if (staff === undefined) {
+        throw new ApiError(404, "staff not found");
+      }
+      _assertNotCorrupted(staff);
+      staff.active = false;
+      return staff;
+    });
     return { ok: true };
   }
 

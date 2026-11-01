@@ -13,13 +13,14 @@
  * C:\Users\ghonf\cc-company\shisha\jisseki-app-standalone-build)。
  * ロジックは忠実に移植し、変更した箇所はコードコメントに理由を明記する。
  *
- * targets.pyのコメントが指摘する「IndexedDB移植によりTOCTOU(read→update→write
- * の間に他の書き込みが割り込むロストアップデート)の心配が無くなる」点は
- * そのまま当てはまる: IndexedDBの単一トランザクション(dbPut)で書き込みが
- * アトミックに行われるため、targets.pyの_data_lock相当のロックは不要
- * (db.jsのdbPut自体がreadwriteトランザクションとして完結する)。
- * ただし本関数は dbGet→(メモリ上でupdate)→dbPut の間に別のawaitを挟まない
- * ようにしてあるので、同じ安全性が保たれている。
+ * 訂正(audit-loop、2026-11-01の監査で指摘): 上のtargets.pyコメントを踏襲して
+ * 「dbGet→update→dbPutの間に別のawaitを挟まなければ安全」と書いていたが、
+ * これは誤り。db.jsのdbGet/dbPutはそれぞれ別のIndexedDBトランザクションを
+ * 開く(db.js参照)ため、setTarget関数内に他のawaitが無くても、2つの
+ * setTarget呼び出しが並行実行されれば一方のdbGetがもう一方のdbPutより先に
+ * 走り、後勝ちで片方の更新を消しうる(この思い込みが実際に他のファイル
+ * [local/settings.js]で実害事故を起こしたため、同じ説明をここに残さない)。
+ * dbUpdate()(db.js)経由の直列化に変更し、安全性を保証する。
  */
 (function (root) {
   "use strict";
@@ -64,12 +65,13 @@
   // (浅いマージ)。2026-10-30バグハント指摘のstore_id検証も忠実に移植する。
   async function setTarget(storeId, body) {
     await checkStoreId(storeId);
-    var existing = await dbGet(TARGETS_STORE, storeId);
-    if (!_isPlainObject(existing)) {
-      existing = {};
-    }
-    Object.assign(existing, body || {});
-    await dbPut(TARGETS_STORE, storeId, existing);
+    await dbUpdate(TARGETS_STORE, storeId, async function (existing) {
+      if (!_isPlainObject(existing)) {
+        existing = {};
+      }
+      Object.assign(existing, body || {});
+      return existing;
+    });
     return { ok: true };
   }
 

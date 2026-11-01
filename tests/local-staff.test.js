@@ -269,6 +269,102 @@ test("updateStaff: rate_historyに新規追加されたロック済み月のエ�
   }
 });
 
+// audit-loop(2026-11-01)の監査で発見・再現確認済み(Critical): 上の423テストは
+// 「新規追加」しか検証しておらず、ロック済み月の既存エントリを配列から単純に
+// 取り除く(削除する)操作が423をすり抜けていた。削除後は以降の未ロック月の
+// 実効時給がstaff.hourly_rateへ静かに戻ってしまう実害があるため、
+// 削除も新規追加と同様に423で拒否されることを確認する。
+test("updateStaff: rate_historyからロック済み月のエントリを削除しようとすると423(audit-loop発見・修正)", async () => {
+  await ensureStore("st-lockdel");
+  await createStaff({
+    id: "staff-lockdel1",
+    name: "LockDel",
+    store_id: "st-lockdel",
+    pay_type: "hourly",
+    hourly_rate: 1000,
+    rate_history: [
+      { from: "2026-06-01", rate: 1000 },
+      { from: "2026-07-01", rate: 1200 },
+    ],
+  });
+
+  global.isLocked = (y, m) => y === 2026 && m === 6;
+  try {
+    // 6月(ロック済み)のエントリを除いた配列で置換しようとする = 削除操作。
+    await assert.rejects(
+      async () =>
+        updateStaff("staff-lockdel1", {
+          rate_history: [{ from: "2026-07-01", rate: 1200 }],
+        }),
+      (err) => {
+        assert.strictEqual(err.status, 423);
+        assert.match(err.message, /給与確定済み/);
+        return true;
+      }
+    );
+
+    // 423で拒否された以上、実際のデータも変更されていないこと。
+    const staff = await getOneStaff("staff-lockdel1");
+    assert.deepStrictEqual(staff.rate_history, [
+      { from: "2026-06-01", rate: 1000 },
+      { from: "2026-07-01", rate: 1200 },
+    ]);
+  } finally {
+    delete global.isLocked;
+  }
+});
+
+test("updateStaff: ロックされていない月のエントリ削除は許可される", async () => {
+  await ensureStore("st-unlockdel");
+  await createStaff({
+    id: "staff-unlockdel1",
+    name: "UnlockDel",
+    store_id: "st-unlockdel",
+    pay_type: "hourly",
+    hourly_rate: 1000,
+    rate_history: [
+      { from: "2026-06-01", rate: 1000 },
+      { from: "2026-07-01", rate: 1200 },
+    ],
+  });
+
+  // どの月もロックされていないので、6月分の削除は許可される。
+  global.isLocked = () => false;
+  try {
+    const updated = await updateStaff("staff-unlockdel1", {
+      rate_history: [{ from: "2026-07-01", rate: 1200 }],
+    });
+    assert.deepStrictEqual(updated.rate_history, [{ from: "2026-07-01", rate: 1200 }]);
+  } finally {
+    delete global.isLocked;
+  }
+});
+
+// audit-loop(2026-11-01)の監査で発見(line-by-line correctness): dbGet→dbPutが
+// 直列化されておらず、同一スタッフの複数フィールドを連続編集すると後勝ちで
+// 片方の変更が消えていた。dbUpdate()経由の直列化後、両方の変更が残ることを
+// 確認する(local/settings.jsで実際に起きた事故と同じ原因・同じ回帰テスト形)。
+test("updateStaff: 異なるフィールドへの並行更新は両方とも反映される(レース修正の回帰テスト)", async () => {
+  await ensureStore("st-staffrace");
+  await createStaff({
+    id: "staff-race1",
+    name: "Race1",
+    store_id: "st-staffrace",
+    pay_type: "hourly",
+    hourly_rate: 1000,
+    transport_one_way: 300,
+  });
+
+  await Promise.all([
+    updateStaff("staff-race1", { hourly_rate: 1200 }),
+    updateStaff("staff-race1", { transport_one_way: 500 }),
+  ]);
+
+  const staff = await getOneStaff("staff-race1");
+  assert.strictEqual(staff.hourly_rate, 1200);
+  assert.strictEqual(staff.transport_one_way, 500);
+});
+
 test("updateStaff: isLockedが未定義(Task6未実装)の間はrate_history変更を常に許可する", async () => {
   await ensureStore("st-q");
   await createStaff({

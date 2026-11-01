@@ -108,8 +108,20 @@ function _hasReviewedFinancialData(existing) {
 // 2026-10-26整理: 時給制スタッフの実効時給(研修時給/rate_history)と1日の
 // 支給額計算が、daily.js(_dailyGetRate/_calcEntryTotal)とnippo-log.js
 // (_nlGetEffectiveRate/_nlCalcTotal)にほぼ同一のロジックで個別実装されて
-// いた(_edited_fieldsと同種のドリフトリスク)。ここを唯一の実装元にする。
-function getEffectiveRate(staff, dateStr, trainingRateCache) {
+// いた(_edited_fieldsと同種のドリフトリスク)。ここを唯一の実装元にする……
+// はずだったが、audit-loop(2026-11-01)の監査で発覚(Critical、実害あり):
+// local/payroll.js側にも同名のグローバル関数 `getEffectiveRate`(3引数目が
+// 累計研修時間=数値)が既に存在しており、非モジュールの<script>タグ2本が
+// 同じページに読み込まれるこのPWAでは、後から読み込まれるこのapp.js側の
+// 定義(3引数目はキャッシュオブジェクト)が window.getEffectiveRate を
+// 丸ごと上書きしていた。local/export.js(Excel出力)はpayroll.js側の実装に
+// 依存してbareな`getEffectiveRate`を呼んでいるため、実際にはこのapp.js側の
+// (シグネチャの異なる)関数が呼ばれてしまい、研修時給を卒業したスタッフの
+// 時給が常に卒業前の金額で計算されていた(Node側テストはapp.jsを読み込まない
+// ため検出されなかった)。この関数はフロント画面のリアルタイム見積表示専用
+// なので、payroll.js側の正本と名前が衝突しないよう改名する
+// (calcStaffDayTotal/daily.jsの呼び出し元も合わせて更新済み)。
+function _estimateLiveEffectiveRate(staff, dateStr, trainingRateCache) {
   if (staff.training_rate) {
     const cached = trainingRateCache?.[`${staff.id}|${dateStr}`];
     if (typeof cached === "number") return cached;
@@ -127,7 +139,7 @@ function getEffectiveRate(staff, dateStr, trainingRateCache) {
 
 function calcStaffDayTotal(staff, entry, champMenu, wanope, dateStr, trainingRateCache) {
   const rate = staff.pay_type === "hourly"
-    ? getEffectiveRate(staff, dateStr, trainingRateCache)
+    ? _estimateLiveEffectiveRate(staff, dateStr, trainingRateCache)
     : 0;
   const hourly    = (entry.hours || 0) * rate;
   const drinks    = (entry.drinks || 0) * 70;

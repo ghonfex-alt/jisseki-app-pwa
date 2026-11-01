@@ -80,79 +80,90 @@
   }
 
   // update_store(store.py)の移植。dict.update相当の部分更新(浅いマージ)。
+  //
+  // dbGet→dbPutをdbUpdate()経由の直列化に変えている(audit-loop、2026-11-01の
+  // 監査で発覚: 定休日チェックボックスのような、同じ店舗レコードを連続編集する
+  // UI操作がそのまま後勝ちレースを引き起こし、先の変更が消えることを確認した。
+  // local/settings.jsで実際に発生した事故と同じ原因・同じ直し方)。
   async function updateStore(storeId, body) {
-    var store = await dbGet(STORES_STORE, storeId);
-    if (store === undefined) {
-      throw new ApiError(404, "store not found");
-    }
-    _assertNotCorrupted(store);
-    Object.assign(store, body || {});
-    await dbPut(STORES_STORE, storeId, store);
-    return store;
+    return dbUpdate(STORES_STORE, storeId, async function (store) {
+      if (store === undefined) {
+        throw new ApiError(404, "store not found");
+      }
+      _assertNotCorrupted(store);
+      Object.assign(store, body || {});
+      return store;
+    });
   }
 
   // update_champagne(store.py)の移植。
   async function updateChampagne(storeId, champId, body) {
-    var store = await dbGet(STORES_STORE, storeId);
-    if (store === undefined) {
-      throw new ApiError(404, "store not found");
-    }
-    _assertNotCorrupted(store);
-    var menu = store.champagne_menu || [];
-    var item = menu.find(function (c) {
+    var updatedStore = await dbUpdate(STORES_STORE, storeId, async function (store) {
+      if (store === undefined) {
+        throw new ApiError(404, "store not found");
+      }
+      _assertNotCorrupted(store);
+      var menu = store.champagne_menu || [];
+      var item = menu.find(function (c) {
+        return c && typeof c === "object" && c.id === champId;
+      });
+      if (!item) {
+        throw new ApiError(404, "champagne not found");
+      }
+      if (body && body.name !== undefined && body.name !== null) {
+        item.name = body.name;
+      }
+      if (body && body.price !== undefined && body.price !== null) {
+        item.price = body.price;
+      }
+      return store;
+    });
+    return updatedStore.champagne_menu.find(function (c) {
       return c && typeof c === "object" && c.id === champId;
     });
-    if (!item) {
-      throw new ApiError(404, "champagne not found");
-    }
-    if (body && body.name !== undefined && body.name !== null) {
-      item.name = body.name;
-    }
-    if (body && body.price !== undefined && body.price !== null) {
-      item.price = body.price;
-    }
-    await dbPut(STORES_STORE, storeId, store);
-    return item;
   }
 
   // add_champagne(store.py)の移植。
   async function addChampagne(storeId, body) {
-    var store = await dbGet(STORES_STORE, storeId);
-    if (store === undefined) {
-      throw new ApiError(404, "store not found");
-    }
-    _assertNotCorrupted(store);
-    if (!body || !body.id || !body.name) {
-      throw new ApiError(400, "id and name are required");
-    }
-    if (!store.champagne_menu) {
-      store.champagne_menu = [];
-    }
-    var menu = store.champagne_menu;
-    // 2026-09-27発見の重複id事故(update_champagne/delete_champagneが
-    // next()相当で先頭の1件しかヒットせず2件目が操作不能になる)の再発防止。
-    var dup = menu.some(function (c) {
-      return c && typeof c === "object" && c.id === body.id;
+    return dbUpdate(STORES_STORE, storeId, async function (store) {
+      if (store === undefined) {
+        throw new ApiError(404, "store not found");
+      }
+      _assertNotCorrupted(store);
+      if (!body || !body.id || !body.name) {
+        throw new ApiError(400, "id and name are required");
+      }
+      if (!store.champagne_menu) {
+        store.champagne_menu = [];
+      }
+      var menu = store.champagne_menu;
+      // 2026-09-27発見の重複id事故(update_champagne/delete_champagneが
+      // next()相当で先頭の1件しかヒットせず2件目が操作不能になる)の再発防止。
+      var dup = menu.some(function (c) {
+        return c && typeof c === "object" && c.id === body.id;
+      });
+      if (dup) {
+        throw new ApiError(400, "id '" + body.id + "' は既に使用されています");
+      }
+      menu.push(body);
+      return store;
+    }).then(function () {
+      return body;
     });
-    if (dup) {
-      throw new ApiError(400, "id '" + body.id + "' は既に使用されています");
-    }
-    menu.push(body);
-    await dbPut(STORES_STORE, storeId, store);
-    return body;
   }
 
   // delete_champagne(store.py)の移植。
   async function deleteChampagne(storeId, champId) {
-    var store = await dbGet(STORES_STORE, storeId);
-    if (store === undefined) {
-      throw new ApiError(404, "store not found");
-    }
-    _assertNotCorrupted(store);
-    store.champagne_menu = (store.champagne_menu || []).filter(function (c) {
-      return !(c && typeof c === "object" && c.id === champId);
+    await dbUpdate(STORES_STORE, storeId, async function (store) {
+      if (store === undefined) {
+        throw new ApiError(404, "store not found");
+      }
+      _assertNotCorrupted(store);
+      store.champagne_menu = (store.champagne_menu || []).filter(function (c) {
+        return !(c && typeof c === "object" && c.id === champId);
+      });
+      return store;
     });
-    await dbPut(STORES_STORE, storeId, store);
     return { ok: true };
   }
 

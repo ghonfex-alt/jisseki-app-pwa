@@ -91,6 +91,26 @@ test("updateStock: 在庫数を更新できる", async () => {
   assert.strictEqual(items.find((f) => f.id === added.id).stock, 8);
 });
 
+// audit-loop(2026-11-01)の監査で発見: 在庫画面は商品ごとに+/-ボタンがあり、
+// frontend/inventory.js::_setStockはデバウンス/キュー無しで連打のたびに
+// 新規PUTを発火する。dbGet→dbPutが直列化されていなければ、2商品を素早く
+// 連続操作した際に片方の在庫変更が消えていた。dbUpdate()経由の直列化後、
+// 両方の変更が残ることを確認する。
+test("updateStock: 異なる商品への並行更新は両方とも反映される(レース修正の回帰テスト)", async () => {
+  await ensureStore("inv-race");
+  const a = await addFlavor("inv-race", { brand: "AF", name: "商品A", stock: 5 });
+  const b = await addFlavor("inv-race", { brand: "AF", name: "商品B", stock: 10 });
+
+  await Promise.all([
+    updateStock("inv-race", a.id, { stock: 8 }),
+    updateStock("inv-race", b.id, { stock: 3 }),
+  ]);
+
+  const items = await getInventory("inv-race");
+  assert.strictEqual(items.find((f) => f.id === a.id).stock, 8);
+  assert.strictEqual(items.find((f) => f.id === b.id).stock, 3);
+});
+
 test("updateStock: 負数は0にクランプされる", async () => {
   await ensureStore("inv-g");
   const added = await addFlavor("inv-g", { brand: "AF", name: "レッドアップル", stock: 2 });

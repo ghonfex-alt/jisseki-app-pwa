@@ -50,8 +50,10 @@ function _weekdayStr(dateStr) {
 }
 
 function _dailyGetRate(staff, dateStr) {
-  // 2026-10-26整理: 唯一の実装元(app.js::getEffectiveRate)に委譲。
-  return getEffectiveRate(staff, dateStr, _dailyState.trainingRateCache);
+  // 2026-10-26整理: 唯一の実装元(app.js::_estimateLiveEffectiveRate)に委譲。
+  // (2026-11-01: local/payroll.jsの同名関数との衝突を解消するためapp.js側を
+  // 改名した。詳細はapp.js::_estimateLiveEffectiveRateのコメント参照)。
+  return _estimateLiveEffectiveRate(staff, dateStr, _dailyState.trainingRateCache);
 }
 
 function _dailyIsWanope() {
@@ -219,7 +221,7 @@ function _renderDailyScreen() {
           const ownerIn = entries.some(e=>s.staff.find(x=>x.id===e.staff_id)?.is_owner);
           const paid = entries.filter(e=>!s.staff.find(x=>x.id===e.staff_id)?.is_owner);
           return paid.length===1 && !ownerIn?"inline":"none";
-        })()};background:#f59e0b;color:#111;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;">ワンオペ +¥200/h</span>
+        })()};background:#f59e0b;color:#111;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;">ワンオペ +¥${(window.WANOPE_BONUS ?? 0).toLocaleString()}/h</span>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">
           ${storeStaff.map((st, i) => {
@@ -406,7 +408,7 @@ function _renderStaffInputs() {
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:6px;">
         <input type="checkbox" id="wanope-manual-${st.id}" ${entry.wanope_manual?"checked":""}
           onchange="_dailyToggleWanope('${st.id}',this.checked)">
-        <span style="font-size:12px;color:#f59e0b;">ワンオペ扱いにする（+¥${window.WANOPE_BONUS||200}/h）</span>
+        <span style="font-size:12px;color:#f59e0b;">ワンオペ扱いにする（+¥${(window.WANOPE_BONUS ?? 0).toLocaleString()}/h）</span>
       </label>
       ${st.pay_type === "monthly" ? `
       <div style="display:flex;gap:12px;margin-top:8px;padding-top:8px;border-top:1px solid #374151;">
@@ -548,6 +550,13 @@ function _dailyApiErrMsg(e) {
 
 async function saveDay() {
   if (_dailyBusy) return;
+  // audit-loop(2026-11-01)の監査で発見: このファイル冒頭のコメントは
+  // 「削除・リセット処理中は保存/ページ送りと競合させない、ボタン操作全般に
+  // 効くシンプルな排他フラグ」と説明しているが、実際にはresetDay()でしか
+  // _dailyBusyをtrueにしておらず、saveDay/saveAndNext/navigateDayは
+  // チェックするだけで自分自身はセットしていなかった(連打・多重クリックに
+  // 対する保護になっていなかった)。コメント通りの挙動になるよう修正する。
+  _dailyBusy = true;
   const s = _dailyState;
   const year = parseInt(s.date.split("-")[0]);
   const btn = document.getElementById("save-btn");
@@ -563,6 +572,8 @@ async function saveDay() {
     if (btn) { btn.textContent = "保存失敗"; btn.style.background = "#7f1d1d"; }
     console.error("Save failed:", e);
     _showToast('⚠️ 日次保存失敗: ' + _dailyApiErrMsg(e));
+  } finally {
+    _dailyBusy = false;
   }
 }
 
@@ -597,23 +608,8 @@ async function resetDay() {
 
 async function saveAndNext() {
   if (_dailyBusy) return;
-  const s = _dailyState;
-  const year = parseInt(s.date.split("-")[0]);
+  _dailyBusy = true;
   try {
-    await App.api("PUT", `/daily/${year}/${s.date}/${s.storeId}`, s.data);
-  } catch(e) {
-    _showToast("⚠️ 保存失敗。ネット接続を確認してください");
-    return;
-  }
-  const d = new Date(s.date + "T00:00:00");
-  d.setDate(d.getDate() + 1);
-  const next = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-  App.go("daily", {date: next, storeId: s.storeId});
-}
-
-async function navigateDay(delta) {
-  if (_dailyBusy) return;
-  if (_dailyDirty) {
     const s = _dailyState;
     const year = parseInt(s.date.split("-")[0]);
     try {
@@ -622,11 +618,36 @@ async function navigateDay(delta) {
       _showToast("⚠️ 保存失敗。ネット接続を確認してください");
       return;
     }
+    const d = new Date(s.date + "T00:00:00");
+    d.setDate(d.getDate() + 1);
+    const next = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    App.go("daily", {date: next, storeId: s.storeId});
+  } finally {
+    _dailyBusy = false;
   }
-  const d = new Date(_dailyState.date + "T00:00:00");
-  d.setDate(d.getDate() + delta);
-  const next = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-  App.go("daily", {date: next, storeId: _dailyState.storeId});
+}
+
+async function navigateDay(delta) {
+  if (_dailyBusy) return;
+  _dailyBusy = true;
+  try {
+    if (_dailyDirty) {
+      const s = _dailyState;
+      const year = parseInt(s.date.split("-")[0]);
+      try {
+        await App.api("PUT", `/daily/${year}/${s.date}/${s.storeId}`, s.data);
+      } catch(e) {
+        _showToast("⚠️ 保存失敗。ネット接続を確認してください");
+        return;
+      }
+    }
+    const d = new Date(_dailyState.date + "T00:00:00");
+    d.setDate(d.getDate() + delta);
+    const next = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    App.go("daily", {date: next, storeId: _dailyState.storeId});
+  } finally {
+    _dailyBusy = false;
+  }
 }
 
 function openDatePicker() {

@@ -86,6 +86,22 @@ test("updateSettings: incentive_ratesは1項目だけ送っても他の既存設
   assert.equal(result.incentive_rates.extension.yen_per_count, 30, "送っていないextensionの既存値が消えている(単価が静かに書き換わる事故)");
 });
 
+// 2026-11-01の実機検証で実際に発生した事故(設定画面でキャッチ/呼び/延長を
+// 連続編集→callだけ0円に戻っていた)の直接的な回帰テスト。dbUpdate()経由の
+// 直列化で、3項目を並行更新しても全て残ることを確認する。
+test("updateSettings: catch/call/extensionを並行更新しても全て反映される(レース修正の回帰テスト)", async () => {
+  await Promise.all([
+    updateSettings({ incentive_rates: { catch: { yen_per_count: 100 } } }),
+    updateSettings({ incentive_rates: { call: { yen_per_count: 150 } } }),
+    updateSettings({ incentive_rates: { extension: { yen_per_count: 200 } } }),
+  ]);
+
+  const result = await getSettings();
+  assert.equal(result.incentive_rates.catch.yen_per_count, 100);
+  assert.equal(result.incentive_rates.call.yen_per_count, 150);
+  assert.equal(result.incentive_rates.extension.yen_per_count, 200);
+});
+
 test("updateSettings: incentive_rates.call.yen_per_countが負数なら400", async () => {
   await assert.rejects(async () => updateSettings({ incentive_rates: { call: { yen_per_count: -5 } } }), (err) => {
     assert.strictEqual(err.status, 400);

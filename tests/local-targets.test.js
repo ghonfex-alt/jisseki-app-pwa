@@ -42,6 +42,24 @@ test("setTarget: dict.update相当の部分更新(既存フィールドを保持
   assert.strictEqual(targets["store-t2"].note, "初期値");
 });
 
+// audit-loop(2026-11-01)の監査で発見: このファイル自身のコメントが
+// 「dbGet→update→dbPutの間に別のawaitを挟まなければ安全」と誤って主張して
+// いたが、db.jsのdbGet/dbPutは別々のトランザクションなので並行呼び出しには
+// 無防備だった。dbUpdate()経由の直列化後、両方のフィールドへの並行更新が
+// 残ることを確認する。
+test("setTarget: 異なるフィールドへの並行更新は両方とも反映される(レース修正の回帰テスト)", async () => {
+  await createStore({ id: "store-t-race", name: "Race店" });
+
+  await Promise.all([
+    setTarget("store-t-race", { monthly: 999999 }),
+    setTarget("store-t-race", { note: "並行更新テスト" }),
+  ]);
+
+  const targets = await getTargets();
+  assert.strictEqual(targets["store-t-race"].monthly, 999999);
+  assert.strictEqual(targets["store-t-race"].note, "並行更新テスト");
+});
+
 test("getTargets: 複数店舗分をそれぞれ別キーで返す", async () => {
   await createStore({ id: "store-t3", name: "T3店" });
   await createStore({ id: "store-t4", name: "T4店" });

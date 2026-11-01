@@ -93,6 +93,25 @@ test("updateStore: 存在しなければ404", async () => {
   });
 });
 
+// audit-loop(2026-11-01)の監査で、dbGet→変更→dbPutが直列化されておらず、
+// 設定画面の定休日チェックボックス(店舗ごとに7個、frontend/settings.jsの
+// toggleRegularClosedDayが1個ずつ個別にPUT /stores/:idを呼ぶ)を素早く連続操作
+// すると片方の変更が消えることが判明した(local/settings.jsで実際に起きた
+// インセンティブ単価の事故と同じ原因)。updateStoreがdbUpdate()経由の
+// 直列化に直った後、同じシナリオで両方の変更が残ることを確認する。
+test("updateStore: 異なるフィールドへの並行更新は両方とも反映される(レース修正の回帰テスト)", async () => {
+  await createStore({ id: "store-race", name: "店舗レース" });
+
+  await Promise.all([
+    updateStore("store-race", { regular_closed_days: ["mon"] }),
+    updateStore("store-race", { name: "改名後の店舗" }),
+  ]);
+
+  const result = await getStore("store-race");
+  assert.deepStrictEqual(result.regular_closed_days, ["mon"]);
+  assert.strictEqual(result.name, "改名後の店舗");
+});
+
 test("checkStoreId: 登録済みなら何も起きない", async () => {
   await createStore({ id: "store-f", name: "F店" });
   await assert.doesNotReject(async () => checkStoreId("store-f"));

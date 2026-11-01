@@ -142,27 +142,36 @@
       });
     }
 
-    var stored = await dbGet(SETTINGS_STORE, SETTINGS_KEY);
-    stored = _isPlainObject(stored) ? stored : {};
+    // audit-loop(2026-11-01)の監査で指摘(root cause): この関数のdbGet→
+    // マージ→dbPutが直列化されておらず、キャッチ/呼び/延長の単価を連続編集
+    // すると後勝ちで片方のフィールドの保存が消える実害が出ていた
+    // (frontend/settings.js側に専用の直列化キュー`_queueSettingsWrite`を
+    // 応急的に追加して対処したが、設計批評で「この関数自体がdbUpdate()経由で
+    // ないのは一貫性が無く、frontend側の対策を忘れた別の呼び出し経路があれば
+    // 再発する」と指摘された)。根本の直列化をこちら側にも持たせることで、
+    // frontend側の対策の有無にかかわらず安全にする。
+    await dbUpdate(SETTINGS_STORE, SETTINGS_KEY, async function (stored) {
+      stored = _isPlainObject(stored) ? stored : {};
 
-    if (Object.prototype.hasOwnProperty.call(reqBody, "wanope_bonus")) {
-      stored.wanope_bonus = reqBody.wanope_bonus;
-    }
+      if (Object.prototype.hasOwnProperty.call(reqBody, "wanope_bonus")) {
+        stored.wanope_bonus = reqBody.wanope_bonus;
+      }
 
-    if (incomingRates) {
-      var currentRates = _isPlainObject(stored.incentive_rates) ? stored.incentive_rates : {};
-      var mergedRates = {};
-      INCENTIVE_KEYS.forEach(function (key) {
-        if (Object.prototype.hasOwnProperty.call(incomingRates, key)) {
-          mergedRates[key] = { yen_per_count: incomingRates[key].yen_per_count };
-        } else if (_isPlainObject(currentRates[key])) {
-          mergedRates[key] = { yen_per_count: currentRates[key].yen_per_count };
-        }
-      });
-      stored.incentive_rates = mergedRates;
-    }
+      if (incomingRates) {
+        var currentRates = _isPlainObject(stored.incentive_rates) ? stored.incentive_rates : {};
+        var mergedRates = {};
+        INCENTIVE_KEYS.forEach(function (key) {
+          if (Object.prototype.hasOwnProperty.call(incomingRates, key)) {
+            mergedRates[key] = { yen_per_count: incomingRates[key].yen_per_count };
+          } else if (_isPlainObject(currentRates[key])) {
+            mergedRates[key] = { yen_per_count: currentRates[key].yen_per_count };
+          }
+        });
+        stored.incentive_rates = mergedRates;
+      }
 
-    await dbPut(SETTINGS_STORE, SETTINGS_KEY, stored);
+      return stored;
+    });
     return getSettings();
   }
 

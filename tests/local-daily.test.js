@@ -85,6 +85,28 @@ test("getDay: 日付エントリがdict以外でもEMPTY_DAY相当を返す", as
   assert.strictEqual(day.closed, false);
 });
 
+// audit-loop(2026-11-01)の監査で発見(最も深刻なケースとして指摘): "daily"
+// ストアは年単位で1キーにその年・全店舗分の日次データ全体を保持しており、
+// dbGet→dbPutが直列化されていない間は、同じ年の異なる日付への2つの保存
+// (2タブ/2端末での同時編集、日付移動の連打等)が後勝ちで互いを丸ごと
+// 上書きし、片方の保存が消えていた。dbUpdate()経由の直列化後、両方の日付の
+// 保存が残ることを確認する。
+test("putDay: 同じ年の異なる日付への並行保存は両方とも反映される(レース修正の回帰テスト)", async () => {
+  await ensureStore("d-race");
+
+  await Promise.all([
+    putDay(YEAR, "2026-03-01", "d-race", { sales_excl_tax: 10000, customer_count: 5 }),
+    putDay(YEAR, "2026-03-02", "d-race", { sales_excl_tax: 20000, customer_count: 8 }),
+  ]);
+
+  const day1 = await getDay(YEAR, "2026-03-01", "d-race");
+  const day2 = await getDay(YEAR, "2026-03-02", "d-race");
+  assert.strictEqual(day1.sales_excl_tax, 10000);
+  assert.strictEqual(day1.customer_count, 5);
+  assert.strictEqual(day2.sales_excl_tax, 20000);
+  assert.strictEqual(day2.customer_count, 8);
+});
+
 test("putDay: 日付エントリがdict以外でも正常に書き込める", async () => {
   await ensureStore("d-h");
   await dbPut("daily", YEAR, { "2026-01-07": "corrupted_non_dict" });

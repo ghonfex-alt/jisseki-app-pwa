@@ -143,11 +143,47 @@
     await requestToPromise(store.clear());
   }
 
+  // dbGet→(メモリ上で変更)→dbPut は、dbGet/dbPutがそれぞれ別のIndexedDB
+  // トランザクションを開くため原子的ではない(確認済み: 上のdbGet/dbPutの実装を
+  // 参照)。この「読んで・直して・書き戻す」をローカル変数の中継無しで個別に
+  // 書いていたlocal/settings.js(2026-11-01に実害として発覚: キャッチ/呼び/延長の
+  // 単価を連続編集すると後勝ちで他のフィールドの保存が消える)と同じ形の
+  // read-modify-writeが、local/store.js・local/staff.js・local/daily.js・
+  // local/inventory.js・local/targets.jsにも同じ形のまま残っていた(audit-loop、
+  // 2026-11-01の監査で判明)。settings.jsだけを直しても同じ事故が別のファイルで
+  // 再発するのは目に見えていたため、ここ(db.js)に汎用の直列化ヘルパーを
+  // 一本化し、以後の read-modify-write はすべてこれ経由にする。
+  //
+  // 同じ(storeName, key)への呼び出しをキューで直列化する——先行する呼び出しの
+  // dbPutが完了してから次のdbGetを開始する——ことで、"両方が古い値を読んで
+  // 片方の書き込みが消える"というレースを閉じる。異なるkey同士は並行して
+  // 実行されるため、無関係な書き込みを待たせることはない。
+  // 注意: これはこのタブ(JSの実行コンテキスト)内でのみ有効。複数タブ・複数端末
+  // を同時に同じstore_idで操作するケースまではカバーしない(このアプリは
+  // 単一端末での運用を前提としている。design doc参照)。
+  var _updateQueues = Object.create(null);
+
+  async function dbUpdate(storeName, key, mutatorFn) {
+    var qkey = storeName + "\u0000" + String(key);
+    var prev = _updateQueues[qkey] || Promise.resolve();
+    var next = prev.then(async function () {
+      var current = await dbGet(storeName, key);
+      var mutated = await mutatorFn(current);
+      await dbPut(storeName, key, mutated);
+      return mutated;
+    });
+    // キュー自体は、途中の1件が失敗しても後続の呼び出しのために生かし続ける
+    // (このPromiseを握りつぶしても、呼び出し元に返すnextでは例外はそのまま伝播する)。
+    _updateQueues[qkey] = next.catch(function () {});
+    return next;
+  }
+
   root.dbOpen = dbOpen;
   root.dbGet = dbGet;
   root.dbGetAll = dbGetAll;
   root.dbGetAllWithKeys = dbGetAllWithKeys;
   root.dbPut = dbPut;
+  root.dbUpdate = dbUpdate;
   root.dbDelete = dbDelete;
   root.dbClear = dbClear;
   // 他タスク(例: backup.js のエクスポート/インポート)がストア一覧を

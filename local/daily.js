@@ -218,6 +218,11 @@
   }
 
   // put_day(daily.py)の移植。
+  // dbGet→dbPutをdbUpdate()経由の直列化に変えている(audit-loop、2026-11-01の
+  // 監査で発見・最も深刻なケースとして指摘: "daily"ストアは年単位で1キーに
+  // その年・全店舗分の日次データ全体を保持しており、直列化されていない間は
+  // 同じ年を触る2つの保存(2タブ/2端末での同時編集、連続した日付移動での
+  // 保存等)が、片方がもう片方を丸ごと巻き込んで消すリスクがあった)。
   async function putDay(year, date, storeId, body) {
     // 2026-10-30バグハントで指摘(Critical): store_idの検証が無く、任意の
     // store_idで恒久的なゴミデータが作成できた(実際に検証中の事故で実証済み)。
@@ -232,41 +237,44 @@
     _validateNumericFields(reqBody);
     _validateStaffEntries(reqBody);
 
-    var yearData = (await dbGet(DAILY_STORE, year)) || {};
-    if (!_isPlainObject(yearData[date])) {
-      yearData[date] = {};
-    }
-    var existing = yearData[date][storeId];
-    if (!_isPlainObject(existing)) {
-      existing = {};
-    }
-    // 画面がGETで読み込んだ_deleted:true付きのレコードをそのままbodyに
-    // 積んでPUTしてくる経路があるため、existingだけでなく最終マージ結果からも
-    // 消す(2026-08-18: 画面側の_deleted除去処理を撤廃した際に、existing側だけ
-    // 消しても{...existing, ...body}のbodyがそれを持ち込めば残ることが判明)。
-    delete existing._deleted;
-
-    var priorEdited = _entryEditedFields(existing);
-    var newEditedRaw = reqBody._edited_fields;
-    var newEdited = Array.isArray(newEditedRaw) ? new Set(newEditedRaw) : new Set();
-    var editedFields = Array.from(priorEdited);
-    newEdited.forEach(function (f) {
-      if (NUMERIC_FIELDS.indexOf(f) !== -1 && editedFields.indexOf(f) === -1) {
-        editedFields.push(f);
+    var mergedDay;
+    await dbUpdate(DAILY_STORE, year, async function (yearData) {
+      yearData = yearData || {};
+      if (!_isPlainObject(yearData[date])) {
+        yearData[date] = {};
       }
+      var existing = yearData[date][storeId];
+      if (!_isPlainObject(existing)) {
+        existing = {};
+      }
+      // 画面がGETで読み込んだ_deleted:true付きのレコードをそのままbodyに
+      // 積んでPUTしてくる経路があるため、existingだけでなく最終マージ結果からも
+      // 消す(2026-08-18: 画面側の_deleted除去処理を撤廃した際に、existing側だけ
+      // 消しても{...existing, ...body}のbodyがそれを持ち込めば残ることが判明)。
+      delete existing._deleted;
+
+      var priorEdited = _entryEditedFields(existing);
+      var newEditedRaw = reqBody._edited_fields;
+      var newEdited = Array.isArray(newEditedRaw) ? new Set(newEditedRaw) : new Set();
+      var editedFields = Array.from(priorEdited);
+      newEdited.forEach(function (f) {
+        if (NUMERIC_FIELDS.indexOf(f) !== -1 && editedFields.indexOf(f) === -1) {
+          editedFields.push(f);
+        }
+      });
+      editedFields.sort();
+
+      mergedDay = Object.assign(
+        {},
+        existing,
+        reqBody,
+        { _user_edited: true, _edited_fields: editedFields }
+      );
+      delete mergedDay._deleted;
+
+      yearData[date][storeId] = mergedDay;
+      return yearData;
     });
-    editedFields.sort();
-
-    var mergedDay = Object.assign(
-      {},
-      existing,
-      reqBody,
-      { _user_edited: true, _edited_fields: editedFields }
-    );
-    delete mergedDay._deleted;
-
-    yearData[date][storeId] = mergedDay;
-    await dbPut(DAILY_STORE, year, yearData);
     return mergedDay;
   }
 
@@ -280,20 +288,22 @@
       throw new ApiError(423, year + "年" + month + "月は給与確定済みのためリセットできません");
     }
 
-    var yearData = (await dbGet(DAILY_STORE, year)) || {};
-    var day = yearData[date];
-    // {}を代入するのではなくキー自体を消す。{}が残っていると「触っていない日」
-    // (EMPTY_DAYのデフォルト0が使われる)と「リセットした日」({}が実際に
-    // storeに保存されている)がAPI応答の形として区別されてしまい、フロント側の
-    // 表示が完全には揃わない(0が"入力済みの値"に見えてしまう)。キーごと消せば
-    // 未タッチの日と完全に同じ応答になる。
-    if (_isPlainObject(day)) {
-      delete day[storeId];
-      if (Object.keys(day).length === 0) {
-        delete yearData[date];
+    await dbUpdate(DAILY_STORE, year, async function (yearData) {
+      yearData = yearData || {};
+      var day = yearData[date];
+      // {}を代入するのではなくキー自体を消す。{}が残っていると「触っていない日」
+      // (EMPTY_DAYのデフォルト0が使われる)と「リセットした日」({}が実際に
+      // storeに保存されている)がAPI応答の形として区別されてしまい、フロント側の
+      // 表示が完全には揃わない(0が"入力済みの値"に見えてしまう)。キーごと消せば
+      // 未タッチの日と完全に同じ応答になる。
+      if (_isPlainObject(day)) {
+        delete day[storeId];
+        if (Object.keys(day).length === 0) {
+          delete yearData[date];
+        }
       }
-    }
-    await dbPut(DAILY_STORE, year, yearData);
+      return yearData;
+    });
     return { reset: true, date: date, store_id: storeId };
   }
 
