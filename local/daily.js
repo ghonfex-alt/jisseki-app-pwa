@@ -342,11 +342,48 @@
     return result;
   }
 
+  // get_store_history(JISSEKI_SRC/routers/sync.py)の移植。summary.jsの前年同月比較
+  // (昨年同月の売上・客数表示)が実際にこのエンドポイントを呼ぶため追加
+  // (当初の計画書にはsync.py関連のタスクが無く、見落とされていた。
+  // nippo_confirmed関連の他のsync.pyエンドポイントは、唯一の呼び出し元
+  // frontend/nippo-log.jsが非ゴールで削除されたため移植不要と確認済み)。
+  // 全年度分の"daily"ストアを横断して該当store_idの月別売上・客数を集計する。
+  // 静的履歴ファイル(monthly_<store_id>_history.json)による補完は、get_annual
+  // と同じ理由(買い手の新規インストールに存在しない)で移植しない。
+  async function getStoreHistory(storeId) {
+    var allYears = (await dbGetAll(DAILY_STORE)) || [];
+    var monthly = {};
+    allYears.forEach(function (yearData) {
+      if (!_isPlainObject(yearData)) return;
+      Object.keys(yearData).forEach(function (dateStr) {
+        var stores = yearData[dateStr];
+        if (!_isPlainObject(stores) || !stores[storeId]) return;
+        var d = stores[storeId];
+        if (!_isPlainObject(d) || d.closed || !((d.sales_excl_tax || 0) > 0)) return;
+        var ym = dateStr.slice(0, 7);
+        if (!monthly[ym]) monthly[ym] = { customers: 0, sales: 0 };
+        monthly[ym].customers += d.customer_count || 0;
+        monthly[ym].sales += d.sales_excl_tax || 0;
+      });
+    });
+    var months = Object.keys(monthly).sort().map(function (ym) {
+      var v = monthly[ym];
+      return {
+        month: ym,
+        customers: v.customers,
+        sales: v.sales,
+        avg_per_customer: v.customers > 0 ? Math.round(v.sales / v.customers) : 0,
+      };
+    });
+    return { store: storeId, months: months };
+  }
+
   root.dailyEmptyDay = emptyDay;
   root.getDay = getDay;
   root.getMonth = getMonth;
   root.getMonthAll = getMonthAll;
   root.getAnnual = getAnnual;
+  root.getStoreHistory = getStoreHistory;
   root.putDay = putDay;
   root.resetDay = resetDay;
 
@@ -375,5 +412,10 @@
   });
   registerRoute("POST", "/daily/:year/:date/:store_id/reset", function (params) {
     return resetDay(parseInt(params.year, 10), params.date, params.store_id);
+  });
+  // JISSEKI_SRCではrouters/sync.py(prefix="/sync")にあるエンドポイントだが、
+  // "daily"ストアを読むロジックなのでファイルはdaily.jsにまとめた。
+  registerRoute("GET", "/sync/history/:store_id", function (params) {
+    return getStoreHistory(params.store_id);
   });
 })(typeof window !== "undefined" ? window : globalThis);

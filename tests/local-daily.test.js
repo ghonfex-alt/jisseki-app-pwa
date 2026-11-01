@@ -321,3 +321,26 @@ test("getAnnual: データが無い店舗は結果に含まれない", async () 
   const annual = await localApiCall("GET", `/daily/${YEAR}/annual`);
   assert.strictEqual(annual["d-annual-empty"], undefined);
 });
+
+test("getStoreHistory: 複数年をまたいで月別の売上・客数を集計する", async () => {
+  await ensureStore("d-hist");
+  await putDay(2025, "2025-12-15", "d-hist", { sales_excl_tax: 8000, customer_count: 4 });
+  await putDay(YEAR, "2026-01-10", "d-hist", { sales_excl_tax: 12000, customer_count: 6 });
+  await putDay(YEAR, "2026-01-11", "d-hist", { sales_excl_tax: 0, customer_count: 0, closed: true });
+
+  const hist = await localApiCall("GET", "/sync/history/d-hist");
+  assert.strictEqual(hist.store, "d-hist");
+  const dec = hist.months.find((m) => m.month === "2025-12");
+  assert.strictEqual(dec.sales, 8000);
+  assert.strictEqual(dec.customers, 4);
+  assert.strictEqual(dec.avg_per_customer, 2000);
+  const jan = hist.months.find((m) => m.month === "2026-01");
+  assert.strictEqual(jan.sales, 12000);
+  assert.strictEqual(jan.customers, 6);
+});
+
+test("getStoreHistory: データが無い店舗は空のmonths配列を返す", async () => {
+  const hist = await localApiCall("GET", "/sync/history/d-hist-none");
+  assert.strictEqual(hist.store, "d-hist-none");
+  assert.deepStrictEqual(hist.months, []);
+});
