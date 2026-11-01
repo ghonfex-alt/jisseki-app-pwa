@@ -436,14 +436,16 @@ async function togglePayrollLock() {
   _updateLockBanner(year, month);
 }
 
+// PDF出力(services/pdf_writer.py)はPWA化のTask10(Excel出力のみ)の対象外のため
+// 未移植。サーバーが無くなった今、以前のwindow.open('/export/payslip/...')は
+// 何も起きず無言で失敗するだけになるため、せめて理由が分かるメッセージに
+// 差し替える。給与データ自体はexportExcel()のExcelダウンロードで確認できる。
 function openPayslipPdf(staffId, year, month, storeId) {
-  window.open(`/export/payslip/${year}/${month}/${storeId}/${staffId}`, '_blank');
+  alert("給与明細のPDF出力は現在準備中です。「Excel出力」から同じ月のデータを確認できます。");
 }
 
 function openPayrollPdf() {
-  const year  = window._getPayYear  ? window._getPayYear()  : new Date().getFullYear();
-  const month = window._getPayMonth ? window._getPayMonth() : new Date().getMonth() + 1;
-  window.open(`/export/pdf/${year}/${month}`, '_blank');
+  alert("給与一覧のPDF出力は現在準備中です。「Excel出力」から同じ月のデータを確認できます。");
 }
 
 async function exportExcel() {
@@ -451,10 +453,13 @@ async function exportExcel() {
   const month = window._getPayMonth ? window._getPayMonth() : new Date().getMonth() + 1;
 
   try {
-    _showToast("📊 Excel更新中...");
+    _showToast("📊 Excel生成中...");
+    // PWA化に伴い、サーバー上でExcelを開く/export/openはブラウザに相当するAPIが
+    // 無いため廃止(local/export.jsのregisterRoute参照)。/export/{year}/{month}
+    // 自体がダウンロードまで完結させる(ハンドラ内でdownloadWorkbookを実行する)
+    // ため、以前のように続けて開く操作を呼ぶ必要が無い。
     const result = await App.api("POST", `/export/${year}/${month}`);
-    _showToast(`✅ ${result.sheet} を保存しました。Excelを開いています...`);
-    await App.api("POST", `/export/open/${year}`);
+    _showToast(`✅ ${result.sheet} をダウンロードしました`);
   } catch(e) {
     // サーバーからのエラー詳細をそのまま表示
     let msg = e.message || String(e);
