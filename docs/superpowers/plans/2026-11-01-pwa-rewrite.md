@@ -17,6 +17,38 @@ Excel出力のみ)。
 
 **Spec:** `docs/superpowers/specs/2026-11-01-pwa-rewrite-design.md`
 
+## 追加要件: キャッチ・呼び・延長インセンティブ(JISSEKI_SRCには存在しない新機能)
+
+買い手の業態(ガールズバー系)の実態に合わせ、既存の「ドリンクバック」(`entry.drinks`、
+1本¥70固定)と同じ考え方で、以下3種類のインセンティブをスタッフの日次実績に追加する。
+ただし単価・計算方式は買い手側で未確定のため、**設定画面で後から自由に変更できる値**に
+すること(ドリンクの¥70のようにコード内に固定値を埋め込まない)。
+
+- **キャッチ**(客引き成功): `entry.catch_count`(当日の回数、整数)
+- **呼び**(指名呼び出し): `entry.call_count`(同上)
+- **延長**(セッション延長): `entry.extension_count`(同上。「30分単位」等の単位の意味は
+  運用上のラベルに過ぎず、アプリ側は常に「回数」として数える。ドリンクと全く同じ扱い)
+
+**設定(`settings`ストア)に追加するフィールド**:
+```
+incentive_rates: {
+  catch:     { yen_per_count: 0 },
+  call:      { yen_per_count: 0 },
+  extension: { yen_per_count: 0 },
+}
+```
+(初期値は全て0円。買い手が設定画面で実際の単価を入力するまでは給与に影響しない、
+安全な既定値。ワンオペ手当の既定値を0にした過去の教訓と同じ考え方。)
+
+**計算式**(services/payroll.pyのドリンク計算 `drinks * 70` と全く同じ形):
+`catch_count * incentive_rates.catch.yen_per_count + call_count * incentive_rates.call.yen_per_count
++ extension_count * incentive_rates.extension.yen_per_count` を日給に加算する。
+
+**パーセンテージ方式は今回実装しない**: ユーザーから「パーセンテージかもしれない」という
+話があったが、「何に対する割合か」(当日の店舗売上? そのスタッフの担当分?)が未確定のため、
+今回は固定単価方式(上記)のみ実装する。パーセンテージ方式を後日追加したくなった場合は、
+計算の基準となる値をユーザーに確認してから別タスクとして追加する。
+
 ## Global Constraints
 
 - サーバー・Python・外部ネットワーク通信は一切使わない(Excel出力・OCR等も全てブラウザ内で完結)。
@@ -159,12 +191,18 @@ bodyに含まれていても保存結果には残さない仕様、payroll_locks
 **新設: メモ欄**: 設計書の「日報の電子化」に従い、保存データ構造に`memo`(文字列、
 自由記述)フィールドを追加する。バリデーションは無し(何でも保存可)。
 
+**新設: キャッチ・呼び・延長カウント**: 本計画冒頭の「追加要件」の通り、各
+`staff_entries`の要素(1スタッフの1日分エントリ)に`catch_count`・`call_count`・
+`extension_count`(いずれも整数、デフォルト0)を追加する。バリデーションは既存の
+`drinks`フィールドと同じ扱いでよい(負数は拒否する程度)。
+
 - [ ] `JISSEKI_SRC/routers/daily.py`と`JISSEKI_SRC/tests/test_daily_api.py`を読む。
 - [ ] `local/daily.js`を実装する。
 - [ ] `JISSEKI_SRC/tests/test_daily_api.py`の各テストケースに対応するJSテストを書く
   (大半はそのまま移植できるはず)。
+- [ ] `catch_count`/`call_count`/`extension_count`の保存・取得を検証するテストを書く。
 - [ ] テストを通す。
-- [ ] コミット: `feat: 日次実績CRUDをローカルAPIへ移植し、メモ欄を追加`
+- [ ] コミット: `feat: 日次実績CRUDをローカルAPIへ移植し、メモ欄とキャッチ/呼び/延長カウントを追加`
 
 ---
 
@@ -181,16 +219,26 @@ bodyに含まれていても保存結果には残さない仕様、payroll_locks
 シャンパンバック(`champagne_menu`の単価×0.1×本数)、送迎代(`okuri`フラグで片道/往復)、
 月給制スタッフの標準報酬・控除計算、を全て忠実に移植する。
 
+**新設: キャッチ・呼び・延長インセンティブ**: 本計画冒頭の「追加要件」の通り、
+ドリンクバック(`drinks * 70`)と全く同じ形で、
+`catch_count * incentive_rates.catch.yen_per_count`
+`+ call_count * incentive_rates.call.yen_per_count`
+`+ extension_count * incentive_rates.extension.yen_per_count`
+を日給に加算する(`incentive_rates`はTask9で実装する`settings`ストアから読む)。
+既定値は全て0円なので、設定が未入力の間は給与に一切影響しない。
+
 - [ ] `JISSEKI_SRC/services/payroll.py`と`JISSEKI_SRC/routers/payroll.py`を完全に読む
   (部分的に読んで移植すると計算式を間違える。給与計算は金銭が関わるため特に慎重に)。
 - [ ] `JISSEKI_SRC/frontend/app.js`の`getEffectiveRate`/`calcStaffDayTotal`も確認する
   (フロント側に同じ計算ロジックの複製があり、サーバー側と一致させる設計になっている —
   移植後もこの二重実装の一致を崩さないこと。むしろこのタスクで`local/payroll.js`が
   フロント版と全く同じ計算になるよう統一できるなら、それが望ましい)。
-- [ ] `local/payroll.js`を実装する。
+- [ ] `local/payroll.js`を実装する(キャッチ/呼び/延長インセンティブ計算を含む)。
 - [ ] テストを書く: 時給制・月給制それぞれの通常計算、研修時給の時系列切り替わり、
   ワンオペ手当が既定で0円であること(既定値0の回帰テストとして明示的に書く)、
-  シャンパンバック計算、送迎代の往復/片道、を最低限カバーする。
+  シャンパンバック計算、送迎代の往復/片道、キャッチ/呼び/延長インセンティブが
+  既定(単価0円)では給与に影響しないこと、単価を設定した場合に正しく加算されること、
+  を最低限カバーする。
 - [ ] テストを通す。
 - [ ] コミット: `feat: 給与計算ロジックをローカルAPIへ移植`
 
@@ -274,12 +322,19 @@ LINE給与通知(push_line)はGAS連携時代の機能で既にPython側でも�
 `JISSEKI_SRC/routers/license.py`の値をそのまま持ってくる(デモキーのハッシュ。実販売前に
 `docs/seller-notes/`相当の手順で差し替える運用も移植する)。
 
+**settings.jsのみ特記: キャッチ・呼び・延長インセンティブ単価**: 本計画冒頭の
+「追加要件」の通り、`GET/PUT /settings`が返す/受け取るオブジェクトに
+`incentive_rates: { catch: {yen_per_count}, call: {yen_per_count}, extension: {yen_per_count} }`
+を追加する(`wanope_bonus`と同じ階層)。各`yen_per_count`は0以上の数値でバリデーションする
+(既存の`wanope_bonus`バリデーション——bool型除外・負数拒否——と同じガードを使う)。
+初期値は全て`0`。
+
 - [ ] 3ファイルを実装する(それぞれ小さいので1タスクにまとめた)。
-- [ ] テストを書く(settings: wanope_bonusのバリデーション含む。license: 正しいキー/
-  間違ったキー/文字列以外が送られた場合の3パターン——
+- [ ] テストを書く(settings: wanope_bonusと`incentive_rates`各フィールドのバリデーション
+  含む。license: 正しいキー/間違ったキー/文字列以外が送られた場合の3パターン——
   `JISSEKI_SRC/routers/license.py`の「文字列以外で500になる問題を修正」した
   コミット96f8099の修正内容を確認し、同じガードを移植すること)。
-- [ ] コミット: `feat: 目標・設定・ライセンス認証をローカルAPIへ移植`
+- [ ] コミット: `feat: 目標・設定・ライセンス認証をローカルAPIへ移植(キャッチ/呼び/延長単価設定を含む)`
 
 ---
 
@@ -349,22 +404,32 @@ Task3〜10で作った各`local/*.js`を全て読み込み、`App._rawApi`の実
 
 ---
 
-### Task 13: フロントエンド最終調整(setup.js・daily.jsメモ欄UI)
+### Task 13: フロントエンド最終調整(setup.js・daily.jsメモ欄+インセンティブUI・settings.js単価UI)
 
 **Files:**
 - Modify: `frontend/setup.js`
 - Modify: `frontend/daily.js`
+- Modify: `frontend/settings.js`
 
 setup.js: ライセンス認証・店舗作成の初回セットアップ画面は、`App.api`経由で呼んでいる
 ため中身は無改修で動くはずだが、実際に動作確認して問題があれば直す。
 
 daily.js: 仕様書の「日報の電子化」通り、日次入力画面に自由記述の「メモ」
-textareaを追加し、保存・表示が正しく動くようにする。
+textareaを追加し、保存・表示が正しく動くようにする。あわせて、各スタッフの日次入力欄に
+既存の「ドリンク」本数入力と同じ見た目で「キャッチ」「呼び」「延長」の回数入力
+(数値、0以上の整数)を追加する(Task4で追加した`catch_count`/`call_count`/
+`extension_count`に対応)。
 
-- [ ] daily.jsにメモ欄のUIを追加する(他の入力欄と同じスタイルで)。
-- [ ] 保存・読み込みの動作をテストする(Task4のAPIと繋がっていることを確認)。
+settings.js: 「キャッチ」「呼び」「延長」それぞれの1回あたり単価(円)を入力できる欄を
+設定画面に追加する(既存のワンオペ手当設定と同じ見た目・保存パターン)。
+ラベルは「キャッチ(1回あたり)」のように、金額の単位が分かる表記にする。
+
+- [ ] daily.jsにメモ欄・キャッチ/呼び/延長カウントのUIを追加する(他の入力欄と同じ
+  スタイルで)。
+- [ ] settings.jsにキャッチ/呼び/延長の単価設定UIを追加する。
+- [ ] 保存・読み込みの動作をテストする(Task4・Task9のAPIと繋がっていることを確認)。
 - [ ] setup.jsの動作を確認し、問題があれば直す。
-- [ ] コミット: `feat: 日次入力画面にメモ欄を追加`
+- [ ] コミット: `feat: 日次入力画面にメモ欄・キャッチ/呼び/延長入力・単価設定UIを追加`
 
 ---
 
