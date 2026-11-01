@@ -151,6 +151,15 @@ async function _loadSummary(year, month) {
     const avgUnit   = customers > 0 ? Math.round(sales / customers) : 0;
     const avgCust   = salesDays > 0 ? (customers / salesDays).toFixed(1) : "—";
 
+    // 2026-11-02追加: 平均滞在時間の概算(入店・退店時刻は記録していないため、
+    // 延長回数[30分単位]から逆算する——基本時間＋延長回数×30分÷客数。
+    // 実測ではなく概算値であることをUI側にも明記する(frontend/settings.js参照)。
+    const extensionTotal = days.reduce((s, d) =>
+      s + (d.staff_entries || []).reduce((s2, e) => s2 + ((e && e.extension_count) || 0), 0), 0);
+    const avgStayMin = customers > 0
+      ? Math.round((window.BASE_SESSION_MINUTES ?? 60) + (extensionTotal * 30 / customers))
+      : null;
+
     combinedSales     += sales;
     combinedCustomers += customers;
 
@@ -204,6 +213,7 @@ async function _loadSummary(year, month) {
           <span>${customers}人</span>
           <span>${openDays}日</span>
           <span>単 ¥${avgUnit.toLocaleString()}</span>
+          ${avgStayMin !== null ? `<span title="延長回数からの概算値（実測ではありません）">滞在 約${avgStayMin}分</span>` : ''}
         </div>
         ${histRow}`}
       </div>`;

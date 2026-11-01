@@ -42,6 +42,7 @@ App.register("settings", async function() {
     <div class="card" style="margin-top:16px;" id="incentive-settings"></div>
     <div class="card" style="margin-top:16px;">
       <h3 style="color:#6b7280;font-size:12px;text-transform:uppercase;margin-bottom:12px;">データのバックアップ</h3>
+      <div id="backup-last-banner" style="margin-bottom:10px;"></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
         <button class="btn-primary" style="font-size:12px;padding:8px 16px;"
           onclick="exportBackupData()">データを書き出す</button>
@@ -56,6 +57,8 @@ App.register("settings", async function() {
       </div>
     </div>
   `;
+
+  _renderLastBackupBanner(incentiveSettings.last_backup_at);
 
   renderStoreSettings(stores);
   renderStaffSettings(allStaff, stores);
@@ -80,6 +83,11 @@ function renderIncentiveSettings(settings) {
   const catchRate = rates.catch?.yen_per_count ?? 0;
   const callRate = rates.call?.yen_per_count ?? 0;
   const extRate = rates.extension?.yen_per_count ?? 0;
+  // 2026-11-02追加: ドリンクバック単価(元々local/payroll.jsにDRINK_UNIT=70円で
+  // 固定していたが、買い手の実際の単価が判明し設定可能にした。既定70円)。
+  const drinkRate = rates.drink?.yen_per_count ?? 70;
+  // 2026-11-02追加: 平均滞在時間の概算用「基本時間」(frontend/summary.js参照)。
+  const baseSessionMinutes = settings?.base_session_minutes ?? 60;
   el.innerHTML = `
     <h3 style="color:#6b7280;font-size:12px;text-transform:uppercase;margin-bottom:12px;">手当・インセンティブ設定</h3>
     <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px;">
@@ -90,10 +98,10 @@ function renderIncentiveSettings(settings) {
       </div>
       <span style="color:#6b7280;font-size:12px;padding-bottom:9px;">円/h</span>
     </div>
-    <div class="label" style="margin-bottom:8px;">インセンティブ単価（1回あたり）</div>
+    <div class="label" style="margin-bottom:8px;">インセンティブ単価</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
       <div style="flex:1;min-width:110px;">
-        <div class="label">キャッチ（1回あたり）</div>
+        <div class="label">キャッチ（1人あたり）</div>
         <input type="number" min="0" id="setting-catch" value="${catchRate}" style="width:100%;"
           onchange="updateIncentiveRate('catch', this.value)">
       </div>
@@ -103,13 +111,30 @@ function renderIncentiveSettings(settings) {
           onchange="updateIncentiveRate('call', this.value)">
       </div>
       <div style="flex:1;min-width:110px;">
-        <div class="label">延長（1回あたり）</div>
+        <div class="label">延長（30分単位・1人あたり）</div>
         <input type="number" min="0" id="setting-extension" value="${extRate}" style="width:100%;"
           onchange="updateIncentiveRate('extension', this.value)">
       </div>
+      <div style="flex:1;min-width:110px;">
+        <div class="label">ドリンク（1杯あたり）</div>
+        <input type="number" min="0" id="setting-drink" value="${drinkRate}" style="width:100%;"
+          onchange="updateIncentiveRate('drink', this.value)">
+      </div>
+    </div>
+    <div style="color:#6b7280;font-size:11px;margin-top:8px;margin-bottom:14px;">
+      いずれも単位は「円」。延長は30分の延長1回につき・1人あたりの単価（入力欄の「回数」は30分区切りの回数）。
+      0円のままの項目は給与・日次見積額に影響しません。
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-end;">
+      <div style="flex:1;max-width:160px;">
+        <div class="label">基本時間（平均滞在時間の概算用）</div>
+        <input type="number" min="0" id="setting-base-session" value="${baseSessionMinutes}" style="width:100%;"
+          onchange="updateBaseSessionMinutes(this.value)">
+      </div>
+      <span style="color:#6b7280;font-size:12px;padding-bottom:9px;">分</span>
     </div>
     <div style="color:#6b7280;font-size:11px;margin-top:8px;">
-      いずれも単位は「円」。0円のままの項目は給与・日次見積額に影響しません。
+      「今月」画面の平均滞在時間は「基本時間＋延長回数×30分÷客数」で概算します（延長回数から逆算する概算値で、実測ではありません）。
     </div>
   `;
 }
@@ -145,12 +170,55 @@ async function updateIncentiveRate(kind, value) {
   }
 }
 
+// 2026-11-02追加: 平均滞在時間の概算用「基本時間」(frontend/summary.js参照)。
+async function updateBaseSessionMinutes(value) {
+  const n = parseInt(value, 10);
+  const minutes = Number.isNaN(n) || n < 0 ? 0 : n;
+  try {
+    const result = await _queueSettingsWrite(() =>
+      App.api("PUT", "/settings", { base_session_minutes: minutes })
+    );
+    // updateWanopeBonusと同じ理由(今月画面の平均滞在時間キャッシュを即時更新)。
+    window.BASE_SESSION_MINUTES = result.base_session_minutes;
+    _showToast?.("✓ 保存しました");
+  } catch (e) {
+    _showToast?.("⚠️ 保存失敗: " + e.message);
+  }
+}
+
 // ── データのエクスポート/インポート(新設。local/backup.js参照) ─────────────
+
+// audit-loop(2026-11-02)の監査で指摘(設計批評・major): バックアップが
+// 完全に手動頼みで、最後にいつ書き出したか画面のどこにも出ておらず、
+// 取り忘れに気づく手段が無かった。設定画面を開くたびに「最終バックアップ:
+// X日前」を表示し、14日以上(または一度も書き出していない)場合は警告色で
+// 目立たせる。
+function _renderLastBackupBanner(lastBackupAt) {
+  const el = document.getElementById("backup-last-banner");
+  if (!el) return;
+  if (!lastBackupAt) {
+    el.innerHTML = `<div style="background:#3f1d1d;border:1px solid #7f1d1d;border-radius:6px;padding:8px 10px;color:#fca5a5;font-size:12px;">
+      ⚠️ まだ一度もバックアップを書き出していません。「データを書き出す」を今すぐ行ってください。
+    </div>`;
+    return;
+  }
+  const daysAgo = Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000);
+  const stale = daysAgo >= 14;
+  const color = stale ? "#fca5a5" : "#9ca3af";
+  const bg = stale ? "#3f1d1d" : "#1f2937";
+  const border = stale ? "1px solid #7f1d1d" : "1px solid #374151";
+  const warn = stale ? "⚠️ " : "";
+  el.innerHTML = `<div style="background:${bg};border:${border};border-radius:6px;padding:8px 10px;color:${color};font-size:12px;">
+    ${warn}最終バックアップ: ${daysAgo === 0 ? "今日" : daysAgo + "日前"}${stale ? "（そろそろ書き出してください）" : ""}
+  </div>`;
+}
 
 async function exportBackupData() {
   try {
     const result = await App.api("POST", "/backup/export");
     _showToast?.(`✓ 書き出しました（${result.filename}）`);
+    // last_backup_atが更新されたので、画面のバナーも即時更新する。
+    App.api("GET", "/settings").then(s => _renderLastBackupBanner(s.last_backup_at)).catch(() => {});
   } catch (e) {
     _showToast?.("⚠️ 書き出し失敗: " + e.message);
   }
@@ -188,9 +256,31 @@ function _onBackupFileSelected(files) {
 // データの読み込み(全ストア上書き・元に戻せない)はそれよりもう一段重い操作のため、
 // frontend/app.js::_confirmDateやfrontend/inventory.js::_addModalと同じ、
 // 画面内に生成するオーバーレイ型のモーダルで実装する(計画書Task12の明示指示)。
-function _showBackupImportConfirmModal() {
+async function _showBackupImportConfirmModal() {
   const existing = document.getElementById("backup-import-modal");
   if (existing) existing.remove();
+
+  // audit-loop(2026-11-02)の監査で指摘(設計批評・major): 「現在のデータを
+  // 上書きします」という静的な注意文だけで、実際にどれだけのデータが失われる
+  // 可能性があるか(バックアップ後に保存された、より新しいデータがあるか)を
+  // 一切示していなかった。インポート前にPOST /backup/check-import-riskで
+  // 判定し、リスクがあれば警告を強める。
+  let riskWarning = "";
+  try {
+    const risk = await App.api("POST", "/backup/check-import-risk", _pendingBackupImportData);
+    if (risk && risk.newer_date) {
+      riskWarning = `
+        <div style="background:#3f1d1d;border:1px solid #7f1d1d;border-radius:6px;padding:8px 10px;margin-bottom:12px;color:#fca5a5;font-size:12px;">
+          ⚠️ このバックアップ（${_settingsEscAttr(risk.backup_date)}時点）より後の
+          ${_settingsEscAttr(risk.newer_date)}に保存した実績データがあります。
+          読み込むと、その後に入力したデータは失われます。
+        </div>`;
+    }
+  } catch (e) {
+    // 判定自体に失敗しても読み込み自体は止めない(fail-open。既存の静的な
+    // 注意文は常に表示されるため、最低限の注意喚起は残る)。
+  }
+
   const modal = document.createElement("div");
   modal.id = "backup-import-modal";
   Object.assign(modal.style, {
@@ -200,6 +290,7 @@ function _showBackupImportConfirmModal() {
   modal.innerHTML = `
     <div style="background:#1f2937;border-radius:12px;padding:20px;max-width:360px;width:90%;">
       <div style="font-size:14px;font-weight:700;color:#f87171;margin-bottom:10px;">データを読み込みますか？</div>
+      ${riskWarning}
       <div style="font-size:13px;color:#d1d5db;margin-bottom:16px;">
         現在アプリに保存されている全データ（店舗・スタッフ・実績・シフト・在庫・設定など）が、
         選択したファイルの内容で上書きされます。この操作は元に戻せません。

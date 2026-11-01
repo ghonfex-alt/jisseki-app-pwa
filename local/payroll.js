@@ -81,26 +81,35 @@
     return v === null || v === undefined ? 0 : v;
   }
 
-  // 新設: incentive_rates(キャッチ・呼び・延長の単価)。Task9(local/settings.js)が
-  // settingsストアに書き込むまでは常に未設定 = 全て0円として扱う(安全側既定値)。
+  // 新設: incentive_rates(キャッチ・呼び・延長・ドリンクの単価)。
+  // catch/call/extensionはTask9(local/settings.js)がsettingsストアに書き込む
+  // までは常に未設定 = 全て0円として扱う(安全側既定値)。
+  // drinkのみ既定値70円(元々のDRINK_UNIT固定値。local/settings.js::
+  // _defaultIncentiveRatesのコメント参照——2026-11-02、買い手の実際の単価が
+  // 100円と判明したため設定可能にした)。
   async function getIncentiveRates() {
     var settings = await _readSettings();
     var rates = _isPlainObject(settings.incentive_rates) ? settings.incentive_rates : {};
-    function _rate(key) {
+    function _rate(key, fallback) {
       var r = rates[key];
       var yen = r && typeof r === "object" ? r.yen_per_count : undefined;
-      return yen === null || yen === undefined ? 0 : yen;
+      return yen === null || yen === undefined ? fallback : yen;
     }
     return {
-      catch: { yen_per_count: _rate("catch") },
-      call: { yen_per_count: _rate("call") },
-      extension: { yen_per_count: _rate("extension") },
+      catch: { yen_per_count: _rate("catch", 0) },
+      call: { yen_per_count: _rate("call", 0) },
+      extension: { yen_per_count: _rate("extension", 0) },
+      drink: { yen_per_count: _rate("drink", DRINK_UNIT) },
     };
   }
 
   // calc_drink_back(services/payroll.py)の移植。
-  function calcDrinkBack(drinks) {
-    return (drinks || 0) * DRINK_UNIT;
+  // 単価はrate引数で渡す(既定値DRINK_UNIT=70円は呼び出し元が省略した場合の
+  // フォールバックのみ。本番の呼び出し元は全てgetIncentiveRates().drink経由の
+  // 設定可能な単価を渡す——2026-11-02、買い手の実際の単価が判明したため)。
+  function calcDrinkBack(drinks, rate) {
+    var unit = (rate === null || rate === undefined) ? DRINK_UNIT : rate;
+    return (drinks || 0) * unit;
   }
 
   // calc_champagne_back(services/payroll.py)の移植。
@@ -370,10 +379,10 @@
     }, 0));
     var wanopeBonusRate = await getWanopeBonus();
     var wanopeBonus = Math.trunc(wanopeHours * wanopeBonusRate);
-    var drinkBack = entries.reduce(function (s, e) { return s + calcDrinkBack(e && e.drinks); }, 0);
+    var incentiveRates = await getIncentiveRates();
+    var drinkBack = entries.reduce(function (s, e) { return s + calcDrinkBack(e && e.drinks, incentiveRates.drink.yen_per_count); }, 0);
     var champagneBack = entries.reduce(function (s, e) { return s + calcChampagneBack((e && e.champagne) || {}, champMenu); }, 0);
     var transport = entries.reduce(function (s, e) { return s + calcTransport(staff.transport_one_way || 0, (e && e.okuri) || false); }, 0);
-    var incentiveRates = await getIncentiveRates();
     var incentiveBack = entries.reduce(function (s, e) { return s + calcIncentiveBack(e, incentiveRates); }, 0);
     var total = basePay + wanopeBonus + drinkBack + champagneBack + transport + incentiveBack;
     var hand = staff.hand_delivery || false;
@@ -433,12 +442,12 @@
       deductions = { health_insurance: 0, childcare_support: 0, pension: 0, employment_insurance: 0, income_tax: 0, total: 0 };
     }
     var takeHome = monthlySalary - deductions.total;
-    var drinkBackRaw = entries.reduce(function (s, e) { return s + calcDrinkBack(e && e.drinks); }, 0);
+    var incentiveRates = await getIncentiveRates();
+    var drinkBackRaw = entries.reduce(function (s, e) { return s + calcDrinkBack(e && e.drinks, incentiveRates.drink.yen_per_count); }, 0);
     var champBackRaw = entries.reduce(function (s, e) { return s + calcChampagneBack((e && e.champagne) || {}, champMenu); }, 0);
-    var drinkBack = entries.reduce(function (s, e) { return s + ((e && e.include_drink) ? calcDrinkBack(e.drinks) : 0); }, 0);
+    var drinkBack = entries.reduce(function (s, e) { return s + ((e && e.include_drink) ? calcDrinkBack(e.drinks, incentiveRates.drink.yen_per_count) : 0); }, 0);
     var champagneBack = entries.reduce(function (s, e) { return s + ((e && e.include_champagne) ? calcChampagneBack(e.champagne || {}, champMenu) : 0); }, 0);
     var transport = entries.reduce(function (s, e) { return s + calcTransport(staff.transport_one_way || 0, (e && e.okuri) || false); }, 0);
-    var incentiveRates = await getIncentiveRates();
     var incentiveBack = entries.reduce(function (s, e) { return s + calcIncentiveBack(e, incentiveRates); }, 0);
     var sched = scheduledDays > 0 ? scheduledDays : (staff.default_scheduled_days || 22);
     var absenceDed = calcAbsenceDeduction(monthlySalary, sched, absenceDays, staff.absence_base_salary);

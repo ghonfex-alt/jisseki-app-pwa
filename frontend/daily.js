@@ -374,7 +374,7 @@ function _renderStaffInputs() {
             oninput="onStaffInput('${st.id}','call_count',parseInt(this.value)||0)">
         </div>
         <div style="flex:1;">
-          <div class="label">延長（回）</div>
+          <div class="label">延長（30分単位・回）</div>
           <input type="number" min="0" id="ext-${st.id}"
             value="${entry.extension_count||""}" placeholder="0" tabindex="${tabIdx++}"
             oninput="onStaffInput('${st.id}','extension_count',parseInt(this.value)||0)"

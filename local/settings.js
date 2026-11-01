@@ -36,13 +36,29 @@
  * settings.pyのupdate_settingsは「_DEFAULTSに列挙されたキーのみ、bodyにその
  * キーが存在すれば値をそのまま上書き保存する」という浅い(1階層)dict.update。
  * wanope_bonus(フラットな数値)はこれで問題無いが、incentive_ratesは
- * catch/call/extensionの3つの単価を持つ入れ子オブジェクトのため、「bodyに
+ * catch/call/extension/drinkの単価を持つ入れ子オブジェクトのため、「bodyに
  * incentive_rates全体が来たら丸ごと上書き」という素朴な移植にすると、画面側が
- * 1項目だけ変更して送った場合に他の2項目の既存設定が消え、次のGETで0円
- * (既定値)に戻ってしまう——「単価が静かに書き換わる」という、この機能が
- * 警戒している事故と同種の問題を起こしかねない。そのため本ファイルは
- * catch/call/extensionを個別キーとしてフィールド単位でマージする(PUTで
- * 送られてきた項目だけ更新し、送られてこなかった項目は既存の保存値を保持する)。
+ * 1項目だけ変更して送った場合に他の項目の既存設定が消え、次のGETで既定値に
+ * 戻ってしまう——「単価が静かに書き換わる」という、この機能が警戒している
+ * 事故と同種の問題を起こしかねない(2026-11-01のaudit-loopでも、この直列化
+ * 漏れが原因の実害事故を確認・修正済み)。そのため本ファイルはcatch/call/
+ * extension/drinkを個別キーとしてフィールド単位でマージする(PUTで送られて
+ * きた項目だけ更新し、送られてこなかった項目は既存の保存値を保持する)。
+ *
+ * ── 追記(2026-11-02、買い手から実際の単価の連絡を受けて追加) ──────────────
+ * - incentive_rates.drink: ドリンクバックの単価。元々local/payroll.jsに
+ *   DRINK_UNIT=70円固定で移植していたが、買い手の実際の単価(100円)が判明し、
+ *   他の単価と同じく設定画面から変更できる必要が出たため、catch/call/
+ *   extensionと同じ仕組みに統合する。catch/call/extensionは「元々存在しない
+ *   新機能」なので安全側の既定値0円だが、drinkは「元々存在していた機能の
+ *   単価を設定可能にしただけ」なので、未設定時の既定値は0円ではなく、移植元
+ *   (services/payroll.py)の値である70円のままにする(0円がデフォルトだと、
+ *   設定を一度もいじっていない状態で金額が静かに0円になり、ワンオペ手当と
+ *   同種の過少/過大支給事故になりかねないため)。
+ * - base_session_minutes: 平均滞在時間の概算に使う「基本セッション時間(分)」。
+ *   延長回数(30分単位)から平均滞在時間を逆算する用途(frontend/summary.js
+ *   参照)。店舗の基本営業ルールに依存する値のため設定画面で変更可能にする。
+ *   既定値60分(シーシャバーの一般的な1コマ時間)。
  */
 (function (root) {
   "use strict";
@@ -50,20 +66,24 @@
   var SETTINGS_STORE = "settings";
   var SETTINGS_KEY = "global"; // local/payroll.jsと同じ固定キー。
 
-  var INCENTIVE_KEYS = ["catch", "call", "extension"];
+  var INCENTIVE_KEYS = ["catch", "call", "extension", "drink"];
 
   // settings.pyの_DEFAULTSの移植。wanope_bonusの既定値0は絶対に変更しないこと
-  // (ファイル先頭コメント参照)。incentive_ratesは新設のためPythonに対応物は
-  // 無いが、同じ安全側既定値の考え方(全て0円)でここに加える。
+  // (ファイル先頭コメント参照)。incentive_rates/base_session_minutesは新設の
+  // ためPythonに対応物は無いが、同じ考え方でここに加える。
   var _DEFAULTS = {
     wanope_bonus: 0,
+    base_session_minutes: 60,
   };
 
+  // drinkだけ既定値70円(元々のDRINK_UNIT固定値、ファイル先頭コメント参照)。
+  // catch/call/extensionは新設機能なので安全側の0円。
   function _defaultIncentiveRates() {
     return {
       catch: { yen_per_count: 0 },
       call: { yen_per_count: 0 },
       extension: { yen_per_count: 0 },
+      drink: { yen_per_count: 70 },
     };
   }
 
@@ -102,9 +122,17 @@
     var wanope = stored.wanope_bonus !== null && stored.wanope_bonus !== undefined
       ? stored.wanope_bonus
       : _DEFAULTS.wanope_bonus;
+    var baseSessionMinutes = stored.base_session_minutes !== null && stored.base_session_minutes !== undefined
+      ? stored.base_session_minutes
+      : _DEFAULTS.base_session_minutes;
     return {
       wanope_bonus: wanope,
       incentive_rates: _mergeIncentiveRates(stored.incentive_rates),
+      base_session_minutes: baseSessionMinutes,
+      // システム管理の読み取り専用フィールド(local/backup.js::_recordBackupExported
+      // が書き込む)。ユーザーが編集するものではないためupdateSettingsの
+      // バリデーション対象には含めない——未バックアップ時はnull。
+      last_backup_at: stored.last_backup_at !== undefined ? stored.last_backup_at : null,
     };
   }
 
@@ -117,6 +145,13 @@
     if (Object.prototype.hasOwnProperty.call(reqBody, "wanope_bonus")) {
       if (!_isValidNonNegativeNumber(reqBody.wanope_bonus)) {
         throw new ApiError(400, "wanope_bonus は0以上の数値である必要があります");
+      }
+    }
+
+    // base_session_minutesのバリデーション(同じガード)。
+    if (Object.prototype.hasOwnProperty.call(reqBody, "base_session_minutes")) {
+      if (!_isValidNonNegativeNumber(reqBody.base_session_minutes)) {
+        throw new ApiError(400, "base_session_minutes は0以上の数値である必要があります");
       }
     }
 
@@ -155,6 +190,10 @@
 
       if (Object.prototype.hasOwnProperty.call(reqBody, "wanope_bonus")) {
         stored.wanope_bonus = reqBody.wanope_bonus;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(reqBody, "base_session_minutes")) {
+        stored.base_session_minutes = reqBody.base_session_minutes;
       }
 
       if (incomingRates) {

@@ -83,7 +83,7 @@ test("exportBackup: 全DB_STORE_NAMESを含み、各ストアがkey/valueペア�
   assert.strictEqual(typeof dailyEntry.key, "number");
 });
 
-test("ラウンドトリップ: export→全ストアwipe→import で元のデータと完全一致する", async () => {
+test("ラウンドトリップ: export→全ストアwipe→import で元のデータと完全一致する(licenseを除く)", async () => {
   await _clearAll();
   await _seedAllStores();
 
@@ -104,12 +104,57 @@ test("ラウンドトリップ: export→全ストアwipe→import で元のデ�
   const result = await importBackup(parsed);
 
   const after = await _snapshotAll();
-  assert.deepStrictEqual(after, before, "import後のデータがexport前と完全一致すること");
+  // audit-loop(2026-11-02)の監査でlicenseストアをインポート対象から除外した
+  // (セキュリティ修正、下の専用テスト参照)ため、licenseだけは意図的に
+  // 復元されない(=wipe後の空のまま)。それ以外の全ストアは完全一致すること。
+  const otherStores = DB_STORE_NAMES.filter((n) => n !== "license");
+  for (const name of otherStores) {
+    assert.deepStrictEqual(after[name], before[name], `${name} should match before after import`);
+  }
+  assert.deepStrictEqual(after.license, [], "licenseはインポート対象から除外され、復元されないこと");
 
   // store_countsが各ストアの件数(本テストでは全ストア1件)を正しく報告すること。
-  for (const name of DB_STORE_NAMES) {
+  // licenseはインポート処理自体をスキップするためstore_countsに含まれない。
+  for (const name of otherStores) {
     assert.strictEqual(result.store_counts[name], before[name].length);
   }
+  assert.strictEqual(result.store_counts.license, undefined);
+});
+
+// audit-loop(2026-11-02)の監査で指摘(設計批評・major、実際に再現可能な
+// セキュリティ上の懸念): クライアント側のみのライセンス認証
+// (local/license.js)は、バックアップの「データを読み込む」機能経由でも
+// 回避できてしまっていた——stores.license に{"key":"status",
+// "value":{"activated":true}}を仕込んだJSONを読み込ませるだけで、
+// 正規のライセンスキーを一切知らなくても認証済み状態にできた(devtoolsが
+// 使える人向けの回避策より、むしろこちらの方が「普通にアプリのUIを操作する
+// だけ」で再現できてしまう分、危険度が高い)。修正後はlicenseストアが常に
+// インポート対象から除外されるため、この経路での認証バイパスができない
+// ことを直接検証する。
+test("importBackup: 偽のライセンス認証情報を仕込んだバックアップを読み込んでも認証状態は変わらない(セキュリティ修正)", async () => {
+  await dbClear("license");
+  // 現在のアプリは未認証状態。
+  const beforeLicense = await dbGetAllWithKeys("license");
+  assert.deepStrictEqual(beforeLicense, []);
+
+  // 攻撃者が仕込んだ、認証済みを偽装するバックアップファイル。
+  const maliciousBackup = {
+    format: "jisseki-app-pwa-backup",
+    version: 1,
+    exported_at: new Date().toISOString(),
+    stores: {
+      license: [{ key: "status", value: { activated: true } }],
+    },
+  };
+
+  await importBackup(maliciousBackup);
+
+  const afterLicense = await dbGetAllWithKeys("license");
+  assert.deepStrictEqual(
+    afterLicense,
+    [],
+    "licenseストアはインポートで一切変更されないこと(偽の認証情報が書き込まれていない)"
+  );
 });
 
 test("importBackup: バックアップに含まれないストア名は既存データを変更しない(部分バックアップの安全側挙動)", async () => {
@@ -193,17 +238,24 @@ test("importBackup: 不正な形式はApiError(400)で拒否される", async ()
 test("local-api経由: POST /backup/export → POST /backup/import でラウンドトリップできる", async () => {
   await _clearAll();
   await _seedAllStores();
-  const before = await _snapshotAll();
 
   // Node環境ではdocument/navigator.shareが無いため、ダウンロード処理自体は
   // 何もしない(local/export.js::downloadWorkbook/_downloadViaAnchorの早期return)。
   // ここではルーティング(localApiCall)経由でハンドラが正しく呼ばれ、
   // 期待するレスポンス形になることを検証する。
+  //
+  // 注: POST /backup/exportはlast_backup_atをsettingsストアに書き込む副作用が
+  // ある(local/backup.js::_recordBackupExported)ため、「before」スナップショットは
+  // この1回目のexport呼び出しの後に取る(でないと、後続の比較でbefore/afterの
+  // settingsだけ食い違ってしまう)。
+  const exportResultCountsBefore = await _snapshotAll();
   const exportResult = await localApiCall("POST", "/backup/export");
   assert.match(exportResult.filename, /^jisseki-backup_\d{8}_\d{4}\.json$/);
   for (const name of DB_STORE_NAMES) {
-    assert.strictEqual(exportResult.store_counts[name], before[name].length);
+    assert.strictEqual(exportResult.store_counts[name], exportResultCountsBefore[name].length);
   }
+
+  const before = await _snapshotAll();
 
   // exportBackup()を直接呼んでファイルの内容相当を取得し、JSON文字列化→解析を
   // 経由させてimportルートに渡す(実際のフロント側のFileReader+JSON.parseと同じ経路)。
@@ -212,10 +264,61 @@ test("local-api経由: POST /backup/export → POST /backup/import でラウン�
 
   await _clearAll();
   const importResult = await localApiCall("POST", "/backup/import", roundTripped);
-  for (const name of DB_STORE_NAMES) {
+  // licenseはセキュリティ修正によりインポート対象から除外される(上の専用
+  // テスト参照)ため、import側のstore_countsには含まれない。
+  const otherStores = DB_STORE_NAMES.filter((n) => n !== "license");
+  for (const name of otherStores) {
     assert.strictEqual(importResult.store_counts[name], before[name].length);
   }
+  assert.strictEqual(importResult.store_counts.license, undefined);
 
   const after = await _snapshotAll();
-  assert.deepStrictEqual(after, before);
+  for (const name of otherStores) {
+    assert.deepStrictEqual(after[name], before[name]);
+  }
+  assert.deepStrictEqual(after.license, []);
+});
+
+// audit-loop(2026-11-02)の監査で指摘(設計批評・major): インポートは
+// dbClear→dbPutの完全上書きで、バックアップ時点より後に追加された現在の
+// データがどれだけ失われるか、画面には一切表示していなかった(静的な注意文
+// だけ)。checkImportDataLossRiskは「バックアップより後に実際に保存された
+// 日次データがあるか」を判定する(frontend/settings.jsの確認モーダルが
+// この結果を見て警告文を強めるために呼ぶ、POST /backup/check-import-risk)。
+async function _ensureStore(storeId) {
+  await createStore({ id: storeId, name: storeId + "店" }).catch(() => {});
+}
+
+test("checkImportDataLossRisk: バックアップより後の保存済みデータが無ければ警告なし", async () => {
+  await _clearAll();
+  await _ensureStore("risk-a");
+  await putDay(2026, "2026-06-01", "risk-a", { sales_excl_tax: 1000 });
+
+  // バックアップのexported_atが保存日より後(=最新のバックアップ)。
+  const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "2026-06-02T00:00:00.000Z" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, null);
+});
+
+test("checkImportDataLossRisk: バックアップより後に保存した日次データがあれば警告する", async () => {
+  await _clearAll();
+  await _ensureStore("risk-b");
+  await putDay(2026, "2026-06-10", "risk-b", { sales_excl_tax: 2000 });
+
+  // バックアップのexported_atが保存日より前(=古いバックアップを復元しようとしている)。
+  const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "2026-06-01T00:00:00.000Z" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, "2026-06-10");
+  assert.strictEqual(result.backup_date, "2026-06-01");
+});
+
+test("checkImportDataLossRisk: _user_edited:falseなレコードは警告対象にしない(未編集の空枠)", async () => {
+  await _clearAll();
+  await _ensureStore("risk-c");
+  // _user_editedが付かない形で直接dbPut(putDay経由ではない=未編集扱い)。
+  await dbPut("daily", 2026, { "2026-06-15": { "risk-c": { sales_excl_tax: 0 } } });
+
+  const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "2026-06-01T00:00:00.000Z" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, null);
 });

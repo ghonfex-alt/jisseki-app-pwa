@@ -5,6 +5,18 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW:', e));
 }
 
+// audit-loop(2026-11-02)の監査で指摘(設計批評・major): このアプリの全業務
+// データ(売上・給与・スタッフ情報)は1台の端末のIndexedDBにしか存在せず、
+// サーバー側の控えが無い。navigator.storage.persist()を一度も呼んでおらず、
+// 端末のストレージ容量が逼迫した場合にブラウザがこのオリジンのデータを
+// 勝手に消去しうる状態だった(「ホーム画面に追加したPWAは7日ルールの対象外」
+// という説明は期限切れ削除だけの話で、容量逼迫時の削除とは別の話)。
+// 呼ぶだけでよく、失敗してもアプリの動作に影響しない(ベストエフォート)ため、
+// 起動時に一度呼んでおく。
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(() => {});
+}
+
 // 2026-11-01 PWA化: OCRアップロード(_uploadAndNavigate等、下記)は非ゴールとして
 // サーバー側実装を移植していないため、このAPI定数へのfetchは現状どれも404になる
 // (Task11の範囲外。OCR/日報写真機能自体を使わなければ影響しない)。
@@ -17,13 +29,21 @@ window.STORE_NAME   = {};
 // 揃えて0。/settingsの取得に失敗した場合でも画面の見積額が実際の給与計算と
 // ズレないようにする。
 window.WANOPE_BONUS = 0;
-// 新設: キャッチ・呼び・延長インセンティブの単価(local/settings.js::getSettings参照)。
-// WANOPE_BONUSと同じ考え方で既定は全て0円(未設定の間は見積額に影響しない)。
+// 新設: キャッチ・呼び・延長・ドリンクインセンティブの単価
+// (local/settings.js::getSettings参照)。catch/call/extensionはWANOPE_BONUSと
+// 同じ考え方で既定0円(未設定の間は見積額に影響しない)。drinkのみ既定70円
+// (元々のDRINK_UNIT固定値を踏襲。local/payroll.js::getIncentiveRates参照。
+// 2026-11-02、買い手の実際の単価100円が判明したため設定可能にした)。
 window.INCENTIVE_RATES = {
   catch: { yen_per_count: 0 },
   call: { yen_per_count: 0 },
   extension: { yen_per_count: 0 },
+  drink: { yen_per_count: 70 },
 };
+// 新設: 平均滞在時間の概算に使う基本セッション時間(分)。延長回数(30分単位)
+// から逆算する(frontend/summary.js参照)。既定60分
+// (local/settings.js::_DEFAULTS.base_session_minutes参照)。
+window.BASE_SESSION_MINUTES = 60;
 
 // 店舗名・スタッフ名はユーザーの自由入力なので、innerHTMLに差し込む前に必ず通す。
 // index.htmlでapp.jsが最初に読み込まれるため、他の画面用JSからも利用できる。
@@ -142,7 +162,11 @@ function calcStaffDayTotal(staff, entry, champMenu, wanope, dateStr, trainingRat
     ? _estimateLiveEffectiveRate(staff, dateStr, trainingRateCache)
     : 0;
   const hourly    = (entry.hours || 0) * rate;
-  const drinks    = (entry.drinks || 0) * 70;
+  // 2026-11-02: ドリンクバック単価を固定70円から設定可能なwindow.INCENTIVE_RATES.drink
+  // に変更(local/payroll.js::calcDrinkBack参照。買い手の実際の単価100円が判明したため)。
+  // ??を使う(||ではない): 単価0が設定されている場合に||だと固定値70へ
+  // フォールバックしてしまい、実際の給与計算(0円)と画面の見積額が食い違う。
+  const drinks    = (entry.drinks || 0) * (window.INCENTIVE_RATES?.drink?.yen_per_count ?? 70);
   const champ     = Object.entries(entry.champagne || {}).reduce((sum, [id, cnt]) => {
     const item = (champMenu || []).find(c => c.id === id);
     return sum + (item ? item.price * 0.1 * cnt : 0);
@@ -272,6 +296,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // nullish判定で取り込む。
     if (settings.wanope_bonus != null) window.WANOPE_BONUS = settings.wanope_bonus;
     if (settings.incentive_rates) window.INCENTIVE_RATES = settings.incentive_rates;
+    if (settings.base_session_minutes != null) window.BASE_SESSION_MINUTES = settings.base_session_minutes;
   } catch(e) { console.warn('settings fetch failed (fail-open):', e); }
 
   await _loadStoreInfo();

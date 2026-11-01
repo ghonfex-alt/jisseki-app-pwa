@@ -751,7 +751,7 @@
           var basePay = Math.trunc(hours * rate);
           var entryWanope = isWanope || !!entry.wanope_manual;
           var wanopeBonus = (entryWanope && !ownerIds.has(sid)) ? Math.trunc(hours * wanopeBonusRate) : 0;
-          var drinkBack = calcDrinkBack(entry.drinks || 0);
+          var drinkBack = calcDrinkBack(entry.drinks || 0, incentiveRates.drink.yen_per_count);
           var champagneBack = calcChampagneBack(entry.champagne || {}, champMenu);
           var transport = calcTransport(staff.transport_one_way || 0, entry.okuri || false);
           var incentiveBack = calcIncentiveBack(entry, incentiveRates);

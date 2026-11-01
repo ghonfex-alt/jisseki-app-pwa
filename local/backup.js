@@ -116,6 +116,19 @@
     });
   }
 
+  // audit-loop(2026-11-02)の監査で指摘(設計批評・major): ライセンス認証は
+  // クライアント側のみの検証(local/license.js)で、このバックアップ読み込み
+  // 機能経由でも回避できてしまっていた——バックアップJSONの
+  // stores.license = [{"key":"status","value":{"activated":true}}] を
+  // 仕込めば、誰でもライセンスキーを知らなくても「読み込む」操作だけで
+  // 認証済み状態にできた(devtoolsが使える人向けの回避策より、むしろこちらの
+  // 方が「普通にアプリのUIを操作するだけ」で再現できてしまう分、危険度が高い)。
+  // インポート時は"license"ストアを常に対象から除外し、復元後も実際の
+  // ライセンスキー入力を経由した認証状態だけが有効であり続けるようにする
+  // (エクスポート側は従来通り含める——オーナー自身の記録・デバッグ用途に
+  // 残しても実害は無いため)。
+  var IMPORT_EXCLUDED_STORES = ["license"];
+
   // import_backup相当。全オブジェクトストアを対象に、バックアップに含まれる
   // ストアだけdbClear→dbPutし直す(バックアップに含まれないストア名は、
   // 古いバージョンのバックアップ等を想定し、既存データを変更せず残す)。
@@ -125,6 +138,9 @@
     var storeCounts = {};
     for (var i = 0; i < root.DB_STORE_NAMES.length; i++) {
       var name = root.DB_STORE_NAMES[i];
+      if (IMPORT_EXCLUDED_STORES.indexOf(name) !== -1) {
+        continue;
+      }
       var entries = data.stores[name];
       if (!Array.isArray(entries)) {
         continue;
@@ -144,8 +160,67 @@
     return { store_counts: storeCounts };
   }
 
+  // audit-loop(2026-11-02)の監査で指摘(設計批評・major): 読み込みは
+  // dbClear→dbPutの完全上書きで、バックアップ時点より後に追加された
+  // 現在のデータがどれだけ失われるか、画面には一切表示していなかった
+  // (静的な注意文だけ)。「現在のdailyデータの中で一番新しい、ユーザーが
+  // 実際に保存した日付」と「バックアップのexported_at」を比較し、バックアップ
+  // より後のデータが存在する場合は呼び出し側(フロント)に警告文を返す。
+  // ここでは判定のみ行い、実際の確認モーダル表示はfrontend/settings.jsの
+  // 責務とする(本ファイルは他のlocal/*.jsと同じくDOM操作をしない)。
+  async function checkImportDataLossRisk(data) {
+    if (!_isPlainObject(data) || !_isPlainObject(data.stores)) {
+      return { newer_date: null };
+    }
+    var dailyEntries = data.stores.daily;
+    var backupExportedAt = typeof data.exported_at === "string" ? data.exported_at : null;
+
+    var allYears = (await dbGetAll("daily")) || [];
+    var newestDate = null;
+    allYears.forEach(function (yearData) {
+      if (!_isPlainObject(yearData)) return;
+      Object.keys(yearData).forEach(function (dateStr) {
+        var stores = yearData[dateStr];
+        if (!_isPlainObject(stores)) return;
+        var hasUserEdited = Object.keys(stores).some(function (sid) {
+          var d = stores[sid];
+          return _isPlainObject(d) && d._user_edited;
+        });
+        if (hasUserEdited && (!newestDate || dateStr > newestDate)) {
+          newestDate = dateStr;
+        }
+      });
+    });
+
+    if (!newestDate || !backupExportedAt) {
+      return { newer_date: null };
+    }
+    // exported_atはISO日時文字列("2026-11-02T...")なので先頭10文字(日付部分)
+    // だけを比較する(同日中の時刻差までは警告の精度として不要)。
+    var backupDate = backupExportedAt.slice(0, 10);
+    if (newestDate > backupDate) {
+      return { newer_date: newestDate, backup_date: backupDate };
+    }
+    return { newer_date: null };
+  }
+
   root.exportBackup = exportBackup;
   root.importBackup = importBackup;
+  root.checkImportDataLossRisk = checkImportDataLossRisk;
+
+  // バックアップ書き出し成功時刻を記録する(frontend/settings.jsの
+  // 「最終バックアップ: X日前」表示・リマインド用)。audit-loop(2026-11-02)の
+  // 監査で指摘(設計批評・major): バックアップが完全に手動頼みで、最後に
+  // いつ書き出したか画面のどこにも出ておらず、取り忘れに気づく手段が
+  // 無かった。settingsストアに直接書く(dbUpdate経由で直列化、他の設定値を
+  // 消さないようマージする)。
+  async function _recordBackupExported() {
+    await dbUpdate("settings", "global", async function (stored) {
+      stored = _isPlainObject(stored) ? stored : {};
+      stored.last_backup_at = new Date().toISOString();
+      return stored;
+    });
+  }
 
   // POST /backup/export — exportBackup()の結果をJSONファイルとしてダウンロードさせる。
   registerRoute("POST", "/backup/export", async function () {
@@ -156,6 +231,7 @@
       var blob = new Blob([json], { type: "application/json" });
       root.downloadWorkbook(blob, filename);
     }
+    await _recordBackupExported();
     var storeCounts = {};
     Object.keys(data.stores).forEach(function (name) {
       storeCounts[name] = data.stores[name].length;
@@ -167,5 +243,11 @@
   // 全ストアに書き戻す。
   registerRoute("POST", "/backup/import", async function (params, body) {
     return importBackup(body);
+  });
+
+  // POST /backup/check-import-risk — 実際にインポートする前に、フロント側の
+  // 確認モーダルがデータ消失リスクを警告できるようにする判定専用エンドポイント。
+  registerRoute("POST", "/backup/check-import-risk", async function (params, body) {
+    return checkImportDataLossRisk(body);
   });
 })(typeof window !== "undefined" ? window : globalThis);

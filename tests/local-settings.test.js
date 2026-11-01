@@ -23,7 +23,35 @@ test("【回帰】getSettings: 未設定時はincentive_rates(catch/call/extensi
     catch: { yen_per_count: 0 },
     call: { yen_per_count: 0 },
     extension: { yen_per_count: 0 },
-  }, "キャッチ/呼び/延長の単価が既定0円以外になっている(設定していないのに給与へ影響する危険な状態)");
+    // drinkだけ既定値70円(元々のDRINK_UNIT固定値を踏襲。ファイル先頭コメント
+    // および local/settings.js の _defaultIncentiveRates コメント参照)。
+    drink: { yen_per_count: 70 },
+  }, "キャッチ/呼び/延長の単価が既定0円以外、またはドリンクの単価が既定70円以外になっている");
+});
+
+test("【回帰】getSettings: 未設定時はbase_session_minutesが60分", async () => {
+  const settings = await getSettings();
+  assert.equal(settings.base_session_minutes, 60);
+});
+
+test("updateSettings: base_session_minutesを更新できる", async () => {
+  const result = await updateSettings({ base_session_minutes: 90 });
+  assert.equal(result.base_session_minutes, 90);
+});
+
+test("updateSettings: base_session_minutesが負数なら400", async () => {
+  await assert.rejects(async () => updateSettings({ base_session_minutes: -1 }), (err) => {
+    assert.strictEqual(err.status, 400);
+    assert.match(err.message, /base_session_minutes/);
+    return true;
+  });
+});
+
+test("updateSettings: incentive_rates.drink.yen_per_countを更新できる", async () => {
+  const result = await updateSettings({ incentive_rates: { drink: { yen_per_count: 100 } } });
+  assert.equal(result.incentive_rates.drink.yen_per_count, 100);
+  // 他の単価(既定値)は維持されること。
+  assert.equal(result.incentive_rates.catch.yen_per_count, 0);
 });
 
 test("getSettings: 保存済みのwanope_bonusをそのまま返す", async () => {

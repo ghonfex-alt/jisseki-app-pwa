@@ -25,6 +25,32 @@ test("calcDrinkBack: 基本", () => {
 test("calcDrinkBack: 0杯", () => {
   assert.equal(calcDrinkBack(0), 0);
 });
+// 2026-11-02、買い手の実際の単価(100円)が判明し、DRINK_UNIT固定70円から
+// 設定可能な単価(rate引数)に変更した。rate省略時は既定の70円のまま
+// (上の2テスト)、明示的に渡せばその単価で計算されることを確認する。
+test("calcDrinkBack: rate引数を渡すとその単価で計算される", () => {
+  assert.equal(calcDrinkBack(3, 100), 300);
+});
+test("calcDrinkBack: rate=0なら0円(単価未設定時の安全側挙動)", () => {
+  assert.equal(calcDrinkBack(3, 0), 0);
+});
+
+test("getIncentiveRates: drinkは未設定時70円(元々のDRINK_UNIT固定値を踏襲)", async () => {
+  await dbDelete("settings", "global");
+  const rates = await getIncentiveRates();
+  assert.equal(rates.drink.yen_per_count, 70);
+  assert.equal(rates.catch.yen_per_count, 0);
+});
+
+test("getIncentiveRates: drinkは設定済みならその値を返す", async () => {
+  try {
+    await dbPut("settings", "global", { incentive_rates: { drink: { yen_per_count: 100 } } });
+    const rates = await getIncentiveRates();
+    assert.equal(rates.drink.yen_per_count, 100);
+  } finally {
+    await dbDelete("settings", "global");
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // シャンパンバック
