@@ -12,9 +12,10 @@ function _settingsEscAttr(s) {
 
 App.register("settings", async function() {
   const main = document.getElementById("main");
-  const [stores, allStaff] = await Promise.all([
+  const [stores, allStaff, incentiveSettings] = await Promise.all([
     App.api("GET", "/stores"),
     App.api("GET", "/staff"),
+    App.api("GET", "/settings"),
   ]);
 
   main.innerHTML = `
@@ -23,6 +24,7 @@ App.register("settings", async function() {
       <div style="flex:1;min-width:280px;" id="store-settings"></div>
       <div style="flex:1;min-width:280px;" id="staff-settings"></div>
     </div>
+    <div class="card" style="margin-top:16px;" id="incentive-settings"></div>
     <div class="card" style="margin-top:16px;">
       <h3 style="color:#6b7280;font-size:12px;text-transform:uppercase;margin-bottom:12px;">データのバックアップ</h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
@@ -42,7 +44,89 @@ App.register("settings", async function() {
 
   renderStoreSettings(stores);
   renderStaffSettings(allStaff, stores);
+  renderIncentiveSettings(incentiveSettings);
 });
+
+// ── ワンオペ手当・キャッチ/呼び/延長インセンティブ単価の設定UI(新設) ──────────
+// local/settings.js::getSettings/updateSettings(Task9)が返す/受け取る
+// {wanope_bonus, incentive_rates:{catch,call,extension}.yen_per_count} を
+// 編集する画面。既存のワンオペ手当(window.WANOPE_BONUS)はこれまでapp.js起動時に
+// GET /settingsで読み込むだけで、変更できるUIがどこにも無かった
+// (frontend全体をgrepして確認済み)。キャッチ/呼び/延長単価の設定UIを追加する
+// この計画書Task13の指示に合わせて、ワンオペ手当も同じ画面・同じ保存パターン
+// (App.api("PUT","/settings",...))で初めて編集可能にする。
+// 初期値は全て0円(計画書冒頭の「追加要件」通り、単価未確定の間は給与に
+// 影響しない安全な既定値)。
+function renderIncentiveSettings(settings) {
+  const el = document.getElementById("incentive-settings");
+  if (!el) return;
+  const wanope = settings?.wanope_bonus ?? 0;
+  const rates = settings?.incentive_rates || {};
+  const catchRate = rates.catch?.yen_per_count ?? 0;
+  const callRate = rates.call?.yen_per_count ?? 0;
+  const extRate = rates.extension?.yen_per_count ?? 0;
+  el.innerHTML = `
+    <h3 style="color:#6b7280;font-size:12px;text-transform:uppercase;margin-bottom:12px;">手当・インセンティブ設定</h3>
+    <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px;">
+      <div style="flex:1;max-width:160px;">
+        <div class="label">ワンオペ手当（1時間あたり）</div>
+        <input type="number" min="0" id="setting-wanope" value="${wanope}" style="width:100%;"
+          onchange="updateWanopeBonus(this.value)">
+      </div>
+      <span style="color:#6b7280;font-size:12px;padding-bottom:9px;">円/h</span>
+    </div>
+    <div class="label" style="margin-bottom:8px;">インセンティブ単価（1回あたり）</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:110px;">
+        <div class="label">キャッチ（1回あたり）</div>
+        <input type="number" min="0" id="setting-catch" value="${catchRate}" style="width:100%;"
+          onchange="updateIncentiveRate('catch', this.value)">
+      </div>
+      <div style="flex:1;min-width:110px;">
+        <div class="label">呼び（1回あたり）</div>
+        <input type="number" min="0" id="setting-call" value="${callRate}" style="width:100%;"
+          onchange="updateIncentiveRate('call', this.value)">
+      </div>
+      <div style="flex:1;min-width:110px;">
+        <div class="label">延長（1回あたり）</div>
+        <input type="number" min="0" id="setting-extension" value="${extRate}" style="width:100%;"
+          onchange="updateIncentiveRate('extension', this.value)">
+      </div>
+    </div>
+    <div style="color:#6b7280;font-size:11px;margin-top:8px;">
+      いずれも単位は「円」。0円のままの項目は給与・日次見積額に影響しません。
+    </div>
+  `;
+}
+
+async function updateWanopeBonus(value) {
+  const n = parseInt(value, 10);
+  const bonus = Number.isNaN(n) || n < 0 ? 0 : n;
+  try {
+    const result = await App.api("PUT", "/settings", { wanope_bonus: bonus });
+    // app.js起動時に一度だけ読み込んだキャッシュ(window.WANOPE_BONUS)を
+    // ここで即時更新しないと、再読み込みするまで日次入力画面の見積額が
+    // 古い単価のままになる(ワンオペ手当は今回初めて編集可能になった値なので
+    // 特に気づかれにくい)。
+    window.WANOPE_BONUS = result.wanope_bonus;
+    _showToast?.("✓ 保存しました");
+  } catch (e) {
+    _showToast?.("⚠️ 保存失敗: " + e.message);
+  }
+}
+
+async function updateIncentiveRate(kind, value) {
+  const n = parseInt(value, 10);
+  const yen = Number.isNaN(n) || n < 0 ? 0 : n;
+  try {
+    const result = await App.api("PUT", "/settings", { incentive_rates: { [kind]: { yen_per_count: yen } } });
+    // updateWanopeBonusと同じ理由(日次入力画面の見積額キャッシュを即時更新)。
+    window.INCENTIVE_RATES = result.incentive_rates;
+    _showToast?.("✓ 保存しました");
+  } catch (e) {
+    _showToast?.("⚠️ 保存失敗: " + e.message);
+  }
+}
 
 // ── データのエクスポート/インポート(新設。local/backup.js参照) ─────────────
 

@@ -235,6 +235,12 @@ function _renderDailyScreen() {
           }).join("")}
         </div>
         <div id="staff-inputs"></div>
+        <div style="margin-top:12px;">
+          <div class="label">メモ（日報の自由記述）</div>
+          <textarea id="f-memo" rows="3" placeholder="その日の出来事・申し送り事項など"
+            style="width:100%;resize:vertical;background:#111827;border:1px solid #374151;border-radius:6px;color:#f3f4f6;padding:8px;font-size:13px;"
+            oninput="_dailyState.data.memo = this.value; _dailyMarkDirty();">${_dailyEsc(s.data.memo || "")}</textarea>
+        </div>
         <div style="display:flex;gap:8px;margin-top:8px;">
           <button class="btn-primary" id="save-btn" style="flex:1;" onclick="saveDay()">
             保存
@@ -282,7 +288,8 @@ function _renderStaffInputs() {
   storeStaff.forEach((st, idx) => {
     const entry = (s.data.staff_entries || []).filter(e => e && typeof e === 'object').find(e => e.staff_id === st.id) || {
       staff_id: st.id, hours: "", drinks: 0, champagne: {}, okuri: false,
-      include_drink: false, include_champagne: false
+      include_drink: false, include_champagne: false,
+      catch_count: 0, call_count: 0, extension_count: 0
     };
     const isOwner = !!st.is_owner;
     const total = _calcEntryTotal(st, entry, champ, (wanope || entry.wanope_manual) && !isOwner);
@@ -348,7 +355,27 @@ function _renderStaffInputs() {
           <div class="label">ドリンク（杯）</div>
           <input type="number" min="0" id="drinks-${st.id}"
             value="${entry.drinks||""}" placeholder="0" tabindex="${tabIdx++}"
-            oninput="onStaffInput('${st.id}','drinks',parseInt(this.value)||0)"
+            oninput="onStaffInput('${st.id}','drinks',parseInt(this.value)||0)">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:10px;">
+        <div style="flex:1;">
+          <div class="label">キャッチ（回）</div>
+          <input type="number" min="0" id="catch-${st.id}"
+            value="${entry.catch_count||""}" placeholder="0" tabindex="${tabIdx++}"
+            oninput="onStaffInput('${st.id}','catch_count',parseInt(this.value)||0)">
+        </div>
+        <div style="flex:1;">
+          <div class="label">呼び（回）</div>
+          <input type="number" min="0" id="call-${st.id}"
+            value="${entry.call_count||""}" placeholder="0" tabindex="${tabIdx++}"
+            oninput="onStaffInput('${st.id}','call_count',parseInt(this.value)||0)">
+        </div>
+        <div style="flex:1;">
+          <div class="label">延長（回）</div>
+          <input type="number" min="0" id="ext-${st.id}"
+            value="${entry.extension_count||""}" placeholder="0" tabindex="${tabIdx++}"
+            oninput="onStaffInput('${st.id}','extension_count',parseInt(this.value)||0)"
             ${isLast ? `onkeydown="if(event.key==='Tab'){event.preventDefault();saveAndNext();}"` : ""}>
         </div>
       </div>
@@ -409,7 +436,10 @@ function _getOrCreateEntry(staffId) {
   if (!s.data.staff_entries) s.data.staff_entries = [];
   let entry = s.data.staff_entries.find(e => e.staff_id === staffId);
   if (!entry) {
-    entry = {staff_id: staffId, hours: 0, drinks: 0, champagne: {}, okuri: false};
+    entry = {
+      staff_id: staffId, hours: 0, drinks: 0, champagne: {}, okuri: false,
+      catch_count: 0, call_count: 0, extension_count: 0
+    };
     s.data.staff_entries.push(entry);
   }
   return entry;
@@ -483,7 +513,8 @@ function toggleStaff(staffId) {
     s.data.staff_entries.splice(idx, 1);
   } else {
     s.data.staff_entries.push({
-      staff_id: staffId, hours: 0, drinks: 0, champagne: {}, okuri: false
+      staff_id: staffId, hours: 0, drinks: 0, champagne: {}, okuri: false,
+      catch_count: 0, call_count: 0, extension_count: 0
     });
   }
   const chip = document.getElementById(`chip-${staffId}`);

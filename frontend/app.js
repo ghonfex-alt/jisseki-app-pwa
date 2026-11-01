@@ -17,6 +17,13 @@ window.STORE_NAME   = {};
 // 揃えて0。/settingsの取得に失敗した場合でも画面の見積額が実際の給与計算と
 // ズレないようにする。
 window.WANOPE_BONUS = 0;
+// 新設: キャッチ・呼び・延長インセンティブの単価(local/settings.js::getSettings参照)。
+// WANOPE_BONUSと同じ考え方で既定は全て0円(未設定の間は見積額に影響しない)。
+window.INCENTIVE_RATES = {
+  catch: { yen_per_count: 0 },
+  call: { yen_per_count: 0 },
+  extension: { yen_per_count: 0 },
+};
 
 // 店舗名・スタッフ名はユーザーの自由入力なので、innerHTMLに差し込む前に必ず通す。
 // index.htmlでapp.jsが最初に読み込まれるため、他の画面用JSからも利用できる。
@@ -88,7 +95,15 @@ function calcStaffDayTotal(staff, entry, champMenu, wanope, dateStr, trainingRat
   // ||だとフォールバック値が効いてしまい、サーバー側の給与計算(0円)と
   // 画面の見積額が食い違う。
   const wanopeBonus = wanope ? (entry.hours || 0) * (window.WANOPE_BONUS ?? 0) : 0;
-  return Math.round(hourly + drinks + champ + transport + wanopeBonus);
+  // 新設: キャッチ・呼び・延長インセンティブ(ドリンクバックと全く同じ形)。
+  // local/payroll.js::calcIncentiveBackと計算式を一致させること
+  // (単価はwindow.INCENTIVE_RATES、/settings取得失敗時や未設定時は既定0円)。
+  const rates = window.INCENTIVE_RATES || {};
+  const incentive =
+    (entry.catch_count || 0) * (rates.catch?.yen_per_count ?? 0) +
+    (entry.call_count || 0) * (rates.call?.yen_per_count ?? 0) +
+    (entry.extension_count || 0) * (rates.extension?.yen_per_count ?? 0);
+  return Math.round(hourly + drinks + champ + transport + wanopeBonus + incentive);
 }
 
 const App = {
@@ -197,6 +212,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // 0も正当な設定値(ワンオペ手当なし)なので、truthy判定ではなく
     // nullish判定で取り込む。
     if (settings.wanope_bonus != null) window.WANOPE_BONUS = settings.wanope_bonus;
+    if (settings.incentive_rates) window.INCENTIVE_RATES = settings.incentive_rates;
   } catch(e) { console.warn('settings fetch failed (fail-open):', e); }
 
   await _loadStoreInfo();
