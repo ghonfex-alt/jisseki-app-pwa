@@ -352,9 +352,14 @@ async function deleteChamp(storeId, champId) {
 }
 
 async function addChampagne(storeId) {
-  const name = prompt("銘柄名:");
+  const result = await window.promptModal("シャンパン追加", [
+    { label: "銘柄名", value: "" },
+    { label: "価格（円）", value: "0", type: "number" },
+  ]);
+  if (!result) return;
+  const [name, priceStr] = result;
   if (!name) return;
-  const price = parseInt(prompt("価格（円）:") || "0");
+  const price = parseInt(priceStr) || 0;
   const id = name.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_" + Date.now();
   try {
     await App.api("POST", `/stores/${storeId}/champagne`, {id, name, price});
@@ -760,7 +765,11 @@ async function deleteRateHistory(staffId, fromDate) {
 }
 
 async function addStaff(storeId) {
-  const nameRaw = prompt("スタッフ名:");
+  const nameResult = await window.promptModal("スタッフ追加", [
+    { label: "スタッフ名", value: "" },
+  ]);
+  if (!nameResult) return;
+  const [nameRaw] = nameResult;
   if (!nameRaw) return;
   const trimmed = nameRaw.trim();
   if (!trimmed) return;
@@ -819,12 +828,14 @@ async function addStaff(storeId) {
     }
   }
 
-  const rateStr = prompt("時給（円）:", "1100");
-  if (rateStr === null) return;
+  const payResult = await window.promptModal("スタッフ追加", [
+    { label: "時給（円）", value: "1100", type: "number" },
+    { label: "交通費（片道・円）", value: "500", type: "number" },
+  ]);
+  if (!payResult) return;
+  const [rateStr, transportStr] = payResult;
   const rateNum = parseInt(rateStr);
   const rate = Number.isNaN(rateNum) ? 1100 : rateNum;
-  const transportStr = prompt("交通費（片道・円）:", "500");
-  if (transportStr === null) return;
   const transportNum = parseInt(transportStr);
   const transport = Number.isNaN(transportNum) ? 500 : transportNum;
   const id = trimmed + "_" + Date.now();

@@ -728,8 +728,11 @@ async function _dismissShiftGap(date, storeId, staffId) {
 async function _setTarget(storeId) {
   const targets = await App.api("GET", "/targets").catch(() => ({}));
   const current = (targets[storeId] || {}).monthly || '';
-  const input   = prompt(`${_SN()[storeId] || storeId} の月次目標（円）:`, current);
-  if (input === null) return;
+  const result = await window.promptModal(`${_SN()[storeId] || storeId} の月次目標`, [
+    { label: "月次目標（円）", value: String(current), type: "number" },
+  ]);
+  if (!result) return;
+  const [input] = result;
   const val = parseInt(String(input).replace(/[^0-9]/g, ''));
   if (!val || val <= 0) return;
   try {

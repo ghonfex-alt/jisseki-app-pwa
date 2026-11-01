@@ -34,6 +34,53 @@ window.escHtml = function (s) {
   return d.innerHTML;
 };
 
+// ネイティブprompt()はテキスト入力中は他の全イベント(クリック・スクリーンショット等)を
+// ブロックし、ブラウザ自動化とも相性が悪い。inventory.js::_addModal/
+// settings.js::_showBackupImportConfirmModalと同じオーバーレイ型モーダルに統一した、
+// テキスト入力版の共通部品。呼び出し側はPromiseを待つだけでよく、
+// キャンセル時はnull、確定時はfields配列と同じ順の文字列配列を返す(parseIntなどの
+// 変換は呼び出し側で行う、prompt()と同じ契約)。
+window.promptModal = function (title, fields) {
+  return new Promise((resolve) => {
+    document.getElementById("prompt-modal")?.remove();
+    const modal = document.createElement("div");
+    modal.id = "prompt-modal";
+    Object.assign(modal.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.7)",
+      display: "flex", alignItems: "center", justifyContent: "center", zIndex: "9999",
+    });
+    const fieldsHtml = fields.map((f, i) => `
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;color:#9ca3af;">${window.escHtml(f.label)}</label>
+        <input id="prompt-modal-field-${i}" type="${f.type || 'text'}"
+          value="${window.escHtml(f.value ?? '')}"
+          style="width:100%;background:#111827;border:1px solid #374151;border-radius:6px;color:#f3f4f6;padding:8px;font-size:14px;box-sizing:border-box;margin-top:4px;">
+      </div>`).join("");
+    modal.innerHTML = `
+      <div style="background:#1f2937;border-radius:12px;padding:20px;max-width:360px;width:90%;">
+        <div style="font-size:14px;font-weight:700;color:#f3f4f6;margin-bottom:16px;">${window.escHtml(title)}</div>
+        ${fieldsHtml}
+        <div style="display:flex;gap:8px;margin-top:6px;">
+          <button id="prompt-modal-cancel"
+            style="flex:1;padding:10px;background:#374151;border:none;border-radius:8px;color:#9ca3af;font-size:14px;cursor:pointer;">キャンセル</button>
+          <button id="prompt-modal-ok"
+            style="flex:1;padding:10px;background:#7c3aed;border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">OK</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const cleanup = (result) => { modal.remove(); resolve(result); };
+    document.getElementById("prompt-modal-cancel").onclick = () => cleanup(null);
+    document.getElementById("prompt-modal-ok").onclick = () => {
+      cleanup(fields.map((f, i) => document.getElementById(`prompt-modal-field-${i}`).value));
+    };
+    const firstInput = document.getElementById("prompt-modal-field-0");
+    firstInput.focus();
+    firstInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") document.getElementById("prompt-modal-ok").click();
+    });
+  });
+};
+
 // _edited_fields(欄ごとの確定リスト)判定は routers/sync.py::_edited_fields() と
 // 同じロジックをフロント各所(app.js/daily.js/nippo-log.js)で個別に再実装していて
 // ドリフトの温床になっていた(2026-08-02の監査で指摘)。ここを唯一の実装元にし、
