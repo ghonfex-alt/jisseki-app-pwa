@@ -39,22 +39,28 @@ App.register("setup", async function() {
   _renderSetup();
 });
 
-function _setupStepDots() {
+function _setupStepDotsInner() {
   const labels = ["①認証", "②店舗", "③ホーム画面", "④完了"];
-  return `
-    <div style="display:flex;gap:6px;margin-bottom:20px;">
-      ${labels.map((label, i) => {
-        const n = i + 1;
-        const active = n === _setupStep;
-        const done = n < _setupStep;
-        const color = done ? "#4ade80" : active ? "#7c3aed" : "#374151";
-        const textColor = done || active ? "#f3f4f6" : "#6b7280";
-        return `<div style="flex:1;text-align:center;">
-          <div style="height:4px;border-radius:2px;background:${color};margin-bottom:4px;"></div>
-          <div style="font-size:10px;color:${textColor};">${label}</div>
-        </div>`;
-      }).join("")}
+  return labels.map((label, i) => {
+    const n = i + 1;
+    const active = n === _setupStep;
+    const done = n < _setupStep;
+    const color = done ? "#4ade80" : active ? "#7c3aed" : "#374151";
+    const textColor = done || active ? "#f3f4f6" : "#6b7280";
+    return `<div style="flex:1;text-align:center;">
+      <div style="height:4px;border-radius:2px;background:${color};margin-bottom:4px;"></div>
+      <div style="font-size:10px;color:${textColor};">${label}</div>
     </div>`;
+  }).join("");
+}
+
+// 2026-11-02の実機確認で発見(確定): ステップを進めてもインジケーターの
+// 色が最初のステップのまま更新されていなかった(_renderSetupStepBody()は
+// 本文だけを再描画し、ドットの再描画を呼んでいなかったため)。_setupStepを
+// 変更する箇所は必ずこの関数も呼び、インジケーターを現在地と一致させる。
+function _refreshSetupStepDots() {
+  const dots = document.getElementById("setup-step-dots");
+  if (dots) dots.innerHTML = _setupStepDotsInner();
 }
 
 function _renderSetup() {
@@ -63,13 +69,17 @@ function _renderSetup() {
     <div style="max-width:420px;margin:32px auto;padding:24px;background:#1f2937;border-radius:12px;">
       <h2 style="margin-top:0;margin-bottom:4px;">初期セットアップ</h2>
       <div style="color:#6b7280;font-size:12px;margin-bottom:16px;">4つのステップで準備完了です</div>
-      ${_setupStepDots()}
+      <div id="setup-step-dots" style="display:flex;gap:6px;margin-bottom:20px;">${_setupStepDotsInner()}</div>
       <div id="setup-step-body"></div>
     </div>`;
   _renderSetupStepBody();
 }
 
 function _renderSetupStepBody() {
+  // 2026-11-02の実機確認で発見(確定): 本文だけ差し替えてドットの再描画を
+  // 呼び忘れていたバグの再発防止として、この関数自身が常にドットも同期する
+  // (呼び出し側が個別に覚えておく必要を無くす)。
+  _refreshSetupStepDots();
   const body = document.getElementById("setup-step-body");
   if (!body) return;
   if (_setupStep === 1) {
