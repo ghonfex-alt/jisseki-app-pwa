@@ -1,0 +1,53 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # リポジトリの構造(frontend/index.htmlが ../db.js・../local-api.js・
+      # ../local/*.js を参照する相対パス)をそのまま配信する。パスを書き換えると
+      # ローカルでテスト済みの相対パス解決(frontend/*の<script src="../...">や
+      # sw.jsのCORE_ASSETS内の'../...')と食い違うリスクがあるため、あえて
+      # 何も変換しない。ルート直下のindex.htmlがfrontend/index.htmlへ
+      # リダイレクトすることで、サイトのトップURLからそのまま開ける。
+      # 開発専用のもの(node_modules・.git・テスト・社内ドキュメント類)だけを
+      # 除外してステージングする。
+      - name: Stage site (exclude dev-only paths)
+        run: |
+          mkdir -p _site
+          rsync -a --exclude='.git' --exclude='node_modules' --exclude='.github' \
+            --exclude='_site' --exclude='tests' --exclude='.superpowers' \
+            --exclude='docs' --exclude='package.json' --exclude='package-lock.json' \
+            ./ _site/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
