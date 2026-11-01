@@ -1,0 +1,11 @@
+{
+  "name": "jisseki-app-pwa",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
+  }
+}

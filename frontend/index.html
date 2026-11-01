@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="実績管理">
+  <link rel="manifest" href="/manifest.json">
+  <title>実績管理</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <nav id="nav">
+      <span style="color:#a78bfa;font-weight:700;font-size:13px;margin-right:8px;">実績管理</span>
+      <button onclick="App.go('summary')">今月</button>
+      <button onclick="App.go('annual')">年次</button>
+      <button onclick="App.go('daily')">日次入力</button>
+      <button onclick="App.go('payroll')">給与確認</button>
+      <button onclick="App.go('nippo-log')">日報ログ</button>
+      <button onclick="App.go('reflections')">振り返り</button>
+      <button onclick="App.go('shift')">シフト</button>
+      <button onclick="App.go('inventory')">在庫</button>
+      <button onclick="App.go('settings')">設定</button>
+    </nav>
+    <main id="main"></main>
+  </div>
+  <script src="/static/app.js"></script>
+  <script src="/static/setup.js"></script>
+  <script src="/static/summary.js"></script>
+  <script src="/static/nippo-log.js"></script>
+  <script src="/static/settings.js"></script>
+  <script src="/static/reflections.js"></script>
+  <script src="/static/daily.js"></script>
+  <script src="/static/payroll.js"></script>
+  <script src="/static/annual.js"></script>
+  <script src="/static/shift-app.js"></script>
+  <script src="/static/inventory.js"></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { overflow-x: hidden; max-width: 100vw; }
+body { font-family: -apple-system, sans-serif; background: #111827; color: #f3f4f6; min-height: 100vh; overflow-x: hidden; max-width: 100vw; }
+#app { max-width: 100%; overflow-x: hidden; }
+#nav { display: flex; gap: 8px; padding: 10px 12px; background: #1f2937; border-bottom: 1px solid #374151; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; width: 100%; box-sizing: border-box; }
+#nav::-webkit-scrollbar { display: none; }
+#nav button { background: #374151; color: #9ca3af; border: none; border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; white-space: nowrap; flex-shrink: 0; -webkit-tap-highlight-color: transparent; }
+#nav button:hover, #nav button:active { background: #4b5563; color: #f3f4f6; }
+#main { padding: 16px; overflow-x: hidden; max-width: 100%; }
+.card { background: #1f2937; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+.label { font-size: 11px; color: #6b7280; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+input[type="number"], input[type="text"] {
+  background: #111827; border: 1px solid #374151; border-radius: 6px;
+  color: #f3f4f6; font-size: 16px; padding: 8px 12px; width: 100%; outline: none;
+}
+input:focus { border-color: #7c3aed; }
+.btn-primary { background: #7c3aed; color: #fff; border: none; border-radius: 8px; padding: 10px 24px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.btn-primary:hover { background: #6d28d9; }
+.store-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+.store-tab { padding: 6px 16px; border-radius: 20px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; }
+.store-tab.active { background: #7c3aed; color: #fff; }
+.store-tab:not(.active) { background: #374151; color: #9ca3af; }
+.staff-chip { padding: 5px 12px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; }
+.staff-chip.active { background: #7c3aed; color: #fff; }
+.staff-chip:not(.active) { background: #374151; color: #9ca3af; }
+.champ-btn { text-align: center; padding: 7px 10px; border-radius: 7px; border: none; cursor: pointer; min-width: 72px; }
+.champ-btn.selected { background: #7c3aed; color: #fff; }
+.champ-btn:not(.selected) { background: #374151; color: #9ca3af; }
+.money-green { color: #34d399; font-weight: 700; }
+.money-red { color: #f87171; }
+
+@media (max-width: 520px) {
+  #nav { padding: 8px 10px; gap: 5px; }
+  #nav button { padding: 6px 10px; font-size: 12px; }
+  #main { padding: 10px; }
+  .card { padding: 10px; border-radius: 10px; margin-bottom: 8px; }
+  .champ-btn { min-width: 56px; padding: 6px 6px; font-size: 12px; }
+  .btn-primary { padding: 10px 16px; }
+}

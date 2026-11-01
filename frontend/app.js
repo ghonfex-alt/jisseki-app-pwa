@@ -1,0 +1,371 @@
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW:', e));
+}
+
+const API = window.location.origin;
+
+// 全画面共通定数（/storesから動的構築、/configで上書き）
+window.STORE_COLOR  = {};
+window.STORE_NAME   = {};
+// 既定はサーバー側(services/payroll._get_wanope_bonus・routers/settings._DEFAULTS)と
+// 揃えて0。/settingsの取得に失敗した場合でも画面の見積額が実際の給与計算と
+// ズレないようにする。
+window.WANOPE_BONUS = 0;
+
+// 店舗名・スタッフ名はユーザーの自由入力なので、innerHTMLに差し込む前に必ず通す。
+// index.htmlでapp.jsが最初に読み込まれるため、他の画面用JSからも利用できる。
+// (textContent・prompt/confirm・canvasのfillTextに渡す場合はエスケープ不要)
+window.escHtml = function (s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+};
+
+// _edited_fields(欄ごとの確定リスト)判定は routers/sync.py::_edited_fields() と
+// 同じロジックをフロント各所(app.js/daily.js/nippo-log.js)で個別に再実装していて
+// ドリフトの温床になっていた(2026-08-02の監査で指摘)。ここを唯一の実装元にし、
+// 他のJSファイルは必ずこの関数を呼ぶ(index.htmlでapp.jsが最初に読み込まれるため
+// グローバルとして利用可能)。
+// 旧データ(_edited_fieldsが無い)は_user_editedがあれば全欄確定とみなす後方互換。
+const NUMERIC_FIELDS = ["sales_excl_tax", "customer_count", "card_sales"];
+function getEditedFieldsSet(entry) {
+  if (!entry) return new Set();
+  if (Array.isArray(entry._edited_fields)) return new Set(entry._edited_fields);
+  return entry._user_edited === true ? new Set(NUMERIC_FIELDS) : new Set();
+}
+
+// OCR再取込ガード用: _user_editedはPUTを一度でも通れば常にtrueになる粗いフラグ
+// (routers/daily.py::put_day)なので、これだけを見ると「OCR自動保存が1回走った
+// だけ」でも以後の正しいOCR再読取まで「手入力済み」としてブロックされてしまう。
+// 実際に人が確認・確定した欄があるかどうかは_edited_fields(欄ごとの確定リスト)
+// またはローカルの財務値>0で判定する(サーバ側sync保護ロジックと同じ基準)。
+function _hasReviewedFinancialData(existing) {
+  if (!existing) return false;
+  if (getEditedFieldsSet(existing).size > 0) return true;
+  return NUMERIC_FIELDS.some(k => (existing[k] || 0) > 0);
+}
+
+// 2026-10-26整理: 時給制スタッフの実効時給(研修時給/rate_history)と1日の
+// 支給額計算が、daily.js(_dailyGetRate/_calcEntryTotal)とnippo-log.js
+// (_nlGetEffectiveRate/_nlCalcTotal)にほぼ同一のロジックで個別実装されて
+// いた(_edited_fieldsと同種のドリフトリスク)。ここを唯一の実装元にする。
+function getEffectiveRate(staff, dateStr, trainingRateCache) {
+  if (staff.training_rate) {
+    const cached = trainingRateCache?.[`${staff.id}|${dateStr}`];
+    if (typeof cached === "number") return cached;
+    // フェッチ未完了・失敗時は昇給前提の単価を払わないよう安全側(base_rate)に倒す
+    return staff.training_rate.base_rate ?? (staff.hourly_rate || 0);
+  }
+  const history = staff.rate_history || [];
+  let rate = staff.hourly_rate || 0;
+  const valid = history.filter(h => h && typeof h === 'object' && h.from != null);
+  for (const h of valid.slice().sort((a, b) => String(a.from).localeCompare(String(b.from)))) {
+    if (h.from <= dateStr) rate = h.rate;
+  }
+  return rate;
+}
+
+function calcStaffDayTotal(staff, entry, champMenu, wanope, dateStr, trainingRateCache) {
+  const rate = staff.pay_type === "hourly"
+    ? getEffectiveRate(staff, dateStr, trainingRateCache)
+    : 0;
+  const hourly    = (entry.hours || 0) * rate;
+  const drinks    = (entry.drinks || 0) * 70;
+  const champ     = Object.entries(entry.champagne || {}).reduce((sum, [id, cnt]) => {
+    const item = (champMenu || []).find(c => c.id === id);
+    return sum + (item ? item.price * 0.1 * cnt : 0);
+  }, 0);
+  const transport = entry.okuri
+    ? (staff.transport_one_way || 0)
+    : (staff.transport_one_way || 0) * 2;
+  // ??を使う(||ではない): 単価0(=ワンオペ手当を使わない既定の設定)のときに
+  // ||だとフォールバック値が効いてしまい、サーバー側の給与計算(0円)と
+  // 画面の見積額が食い違う。
+  const wanopeBonus = wanope ? (entry.hours || 0) * (window.WANOPE_BONUS ?? 0) : 0;
+  return Math.round(hourly + drinks + champ + transport + wanopeBonus);
+}
+
+const App = {
+  currentStore: null,  // _loadStoreInfo()が実際の店舗一覧から設定する
+  screens: {},
+  // 2026-10-17追加: 同一path宛てのGETが短時間に複数箇所から呼ばれる重複を
+  // 防ぐ(実機で発覚: summary.js内の3つの独立した集計関数が、重なる月の
+  // daily dataをそれぞれ個別にfetchしており、ダッシュボード1回の表示で
+  // 同じ月のデータを最大3回リクエストしていた。「重い」原因の一つだった)。
+  // 進行中の同一GETがあれば新規fetchを発行せず、そのPromiseを共有する。
+  // 副作用のあるPUT/POST/DELETEは対象外(GETのみ)。
+  _inFlightGets: {},
+  // 2026-10-17追加: in-flight dedupだけでは拾いきれない「ほぼ同時だが
+  // 完全には重ならない」GET重複(実機確認: 3関数が別々のタイミングで同じ
+  // 月のdaily dataをfetchしていた)を減らすための短TTLキャッシュ。
+  // {path: {value, ts}}。書き込み(PUT/POST/DELETE)が成功したら全体を
+  // クリアする(個別パスの依存関係追跡を避け、安全側に倒す)。
+  _getCache: {},
+  _GET_CACHE_TTL_MS: 3000,
+  register(name, fn) { this.screens[name] = fn; },
+  go(name, params = {}) {
+    document.getElementById("main").innerHTML = "";
+    if (this.screens[name]) this.screens[name](params);
+  },
+  async api(method, path, body) {
+    if (method === "GET" && body === undefined) {
+      const cached = this._getCache[path];
+      if (cached && (Date.now() - cached.ts) < this._GET_CACHE_TTL_MS) {
+        return cached.value;
+      }
+      if (this._inFlightGets[path]) return this._inFlightGets[path];
+      const p = this._rawApi(method, path, body).then(value => {
+        this._getCache[path] = { value, ts: Date.now() };
+        return value;
+      }).finally(() => {
+        delete this._inFlightGets[path];
+      });
+      this._inFlightGets[path] = p;
+      return p;
+    }
+    const result = await this._rawApi(method, path, body);
+    this._getCache = {};  // 書き込み成功後は古いキャッシュを信用しない
+    return result;
+  },
+  async _rawApi(method, path, body) {
+    const res = await fetch(API + path, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const err = new Error(await res.text());
+      // ステータスコードを付与しておく。無いと呼び出し元が「給与確定済み(423)で
+      // 保存できない」ことと「単なるネットワーク障害」を区別できず、423を
+      // オフライン扱いにして永久にリトライし続けるバグの元になる
+      // (2026-08-06のレビューで発見: shift-app.jsが423を握りつぶしていた)。
+      err.status = res.status;
+      throw err;
+    }
+    return res.json();
+  }
+};
+
+// ---- グローバル画像ドロップ ----
+// 2026-10-30 fix-wave: 店舗情報の取得・window.STORE_NAME等への反映を
+// DOMContentLoaded専用のインライン処理から切り出し、setup.js側(初回セットアップで
+// 店舗作成直後)からも呼べるようにした。これを呼ばないと、セットアップ直後の
+// summary画面が店舗名でなくstore_idのまま表示され続ける(次回フルリロードまで)。
+async function _loadStoreInfo() {
+  const _PALETTE = ["#7c3aed", "#0891b2", "#dc2626", "#16a34a", "#d97706", "#db2777", "#4f46e5", "#0d9488"];
+  let storeIds = [];
+  try {
+    const stores = await App.api("GET", "/stores");
+    storeIds = Object.keys(stores);
+    storeIds.forEach((id, i) => {
+      window.STORE_NAME[id] = stores[id].name || id;
+      window.STORE_COLOR[id] = stores[id].color || _PALETTE[i % _PALETTE.length];
+    });
+  } catch (e) {
+    console.warn("店舗情報の取得に失敗:", e);
+  }
+  window._storeIds = storeIds;  // Task 8でセットアップ画面への遷移判定に使う
+  // 2026-10-31のfix-wave再レビューで指摘: App.currentStoreが"to"固定だと、
+  // ナビバーからparamsなしでinventory/dailyへ遷移した1店舗目(買い手の店舗)が
+  // "to"という存在しないstore_idとして扱われ、在庫画面はエラー、日次入力は
+  // 保存時400になっていた。実際の店舗一覧から動的に決める。
+  App.currentStore = storeIds[0] || null;
+  return storeIds;
+}
+window._loadStoreInfo = _loadStoreInfo;
+
+window.addEventListener("DOMContentLoaded", async () => {
+  try {
+    const settings = await App.api("GET", "/settings");
+    // 0も正当な設定値(ワンオペ手当なし)なので、truthy判定ではなく
+    // nullish判定で取り込む。
+    if (settings.wanope_bonus != null) window.WANOPE_BONUS = settings.wanope_bonus;
+  } catch(e) { console.warn('settings fetch failed (fail-open):', e); }
+
+  await _loadStoreInfo();
+
+  const _licenseStatus = await App.api("GET", "/license/status").catch(() => ({ activated: false }));
+  if (!_licenseStatus.activated || window._storeIds.length === 0) {
+    App.go("setup");
+    return;
+  }
+
+  App.go("summary");
+  _initDrop();
+});
+
+function _initDrop() {
+  const overlay = document.createElement("div");
+  overlay.id = "drop-overlay";
+  overlay.innerHTML = `
+    <div style="text-align:center;">
+      <div style="font-size:48px;margin-bottom:12px;">📷</div>
+      <div style="font-size:20px;font-weight:700;color:#f3f4f6;">写真をドロップ</div>
+      <div style="font-size:13px;color:#9ca3af;margin-top:6px;">EXIFの日付でページに自動反映します</div>
+    </div>`;
+  Object.assign(overlay.style, {
+    position: "fixed", inset: "0", background: "rgba(124,58,237,0.85)",
+    display: "none", alignItems: "center", justifyContent: "center",
+    zIndex: "9999", pointerEvents: "none",
+  });
+  document.body.appendChild(overlay);
+
+  let dragCounter = 0;
+
+  document.addEventListener("dragenter", e => {
+    if ([...e.dataTransfer.types].includes("Files")) {
+      dragCounter++;
+      overlay.style.display = "flex";
+    }
+  });
+  document.addEventListener("dragleave", () => {
+    dragCounter--;
+    if (dragCounter <= 0) { dragCounter = 0; overlay.style.display = "none"; }
+  });
+  document.addEventListener("dragover", e => e.preventDefault());
+  document.addEventListener("drop", async e => {
+    e.preventDefault();
+    dragCounter = 0;
+    overlay.style.display = "none";
+    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
+    if (!files.length) return;
+    for (const file of files) {
+      await _uploadAndNavigate(file);
+    }
+  });
+}
+
+async function _uploadAndNavigate(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const hintDate = (typeof _dailyState !== "undefined" && _dailyState.date) ? _dailyState.date : null;
+  const storeId = (typeof _dailyState !== "undefined" && _dailyState.storeId) ? _dailyState.storeId : "to";
+  if (hintDate) fd.append("hint_date", hintDate);
+  fd.append("store_id", storeId);
+
+  _showToast("📄 日報を読み取り中...");
+
+  const res = await fetch(`${API}/upload`, { method: "POST", body: fd });
+  if (!res.ok) { alert("アップロード失敗: " + await res.text()); return; }
+  const data = await res.json();
+
+  console.log("[OCR]", { method: data.method, ocr_raw: data.ocr_raw, form_data: data.form_data, ocr_error: data.ocr_error });
+
+  if (data.ocr_error) {
+    _showToast(`⚠️ OCRエラー: ${data.ocr_error}`);
+  }
+
+  const fd2 = data.form_data || {};
+  const hasData = fd2.sales_excl_tax > 0 || fd2.customer_count > 0 || (fd2.staff_entries || []).length > 0;
+
+  if (data.method === "ocr" && hasData) {
+    const year = parseInt(data.date.split("-")[0]);
+    // 既に手入力済み(_user_edited=true)の日はOCR自動保存をスキップして上書きを防ぐ
+    let skipOcr = false;
+    try {
+      const existing = await fetch(`${API}/daily/${year}/${data.date}/${storeId}`).then(r => r.json());
+      if (_hasReviewedFinancialData(existing)) skipOcr = true;
+    } catch(e) { console.warn('OCR guard check failed, proceeding without guard:', e); }
+
+    if (skipOcr) {
+      _showToast(`📅 ${data.date} に移動（手入力済みデータを保護）`);
+      App.go("daily", { date: data.date, storeId });
+    } else {
+      const putRes = await fetch(`${API}/daily/${year}/${data.date}/${storeId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fd2),
+      });
+      if (putRes.ok) {
+        _showToast(`✅ 読み取り完了 → ${data.date}`);
+        App.go("daily", { date: data.date, storeId });
+      } else {
+        _showToast("⚠️ 保存失敗");
+        App.go("daily", { date: data.date, storeId });
+      }
+    }
+  } else if (data.method === "ocr") {
+    _showToast(`📅 ${data.date} に移動（数値読み取り不可）`);
+    App.go("daily", { date: data.date, storeId });
+  } else {
+    // 日付不明 → 確認ダイアログ（OCRデータがあれば一緒に渡す）
+    _confirmDate(data.date, data.method, storeId, hasData ? fd2 : null);
+  }
+}
+
+let _confirmFormData = null;
+
+function _confirmDate(detectedDate, method, storeId, fd2) {
+  _confirmFormData = fd2 || null;
+  const labels = { exif: "📷 EXIF", page: "📅 現在のページ", today: "📅 今日" };
+  const existing = document.getElementById("date-confirm-modal");
+  if (existing) existing.remove();
+
+  const hasData = fd2 && (fd2.sales_excl_tax > 0 || fd2.customer_count > 0 || (fd2.staff_entries || []).length > 0);
+  const modal = document.createElement("div");
+  modal.id = "date-confirm-modal";
+  Object.assign(modal.style, {
+    position: "fixed", bottom: "24px", left: "50%", transform: "translateX(-50%)",
+    background: "#1f2937", border: "1px solid #7c3aed", borderRadius: "12px",
+    padding: "14px 18px", zIndex: "9999", boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+    minWidth: "280px",
+  });
+  modal.innerHTML = `
+    <div style="font-size:12px;color:#9ca3af;margin-bottom:8px;">${labels[method] || ""} — 日付を確認してください${hasData ? " <span style='color:#34d399'>（数値読み取り済み）</span>" : ""}</div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <input type="date" id="confirm-date-input" value="${detectedDate}"
+        style="background:#111827;border:1px solid #374151;border-radius:6px;color:#f3f4f6;font-size:15px;padding:7px 10px;flex:1;">
+      <button onclick="_applyDate(this)" data-store="${storeId}"
+        style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:14px;">
+        移動
+      </button>
+      <button onclick="document.getElementById('date-confirm-modal').remove()"
+        style="background:#374151;color:#9ca3af;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;">
+        ✕
+      </button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById("confirm-date-input").focus();
+}
+
+async function _applyDate(btn) {
+  const date = document.getElementById("confirm-date-input").value;
+  const storeId = btn.dataset.store;
+  const fd2 = _confirmFormData;
+  _confirmFormData = null;
+  document.getElementById("date-confirm-modal").remove();
+  if (!date) return;
+  if (fd2) {
+    const year = parseInt(date.split("-")[0]);
+    let skipOcr = false;
+    try {
+      const existing = await fetch(`${API}/daily/${year}/${date}/${storeId}`).then(r => r.json());
+      if (_hasReviewedFinancialData(existing)) skipOcr = true;
+    } catch(e) { console.warn('OCR guard check failed, proceeding without guard:', e); }
+    if (skipOcr) {
+      _showToast(`📅 ${date} に移動（手入力済みデータを保護）`);
+    } else {
+      const res = await fetch(`${API}/daily/${year}/${date}/${storeId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fd2),
+      });
+      if (!res.ok) _showToast("⚠️ 保存失敗: " + await res.text());
+    }
+  }
+  App.go("daily", { date, storeId });
+}
+
+function _showToast(msg) {
+  const t = document.createElement("div");
+  Object.assign(t.style, {
+    position: "fixed", bottom: "24px", left: "50%", transform: "translateX(-50%)",
+    background: "#1f2937", color: "#f3f4f6", padding: "10px 20px",
+    borderRadius: "8px", fontSize: "13px", zIndex: "9999",
+    border: "1px solid #374151", boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+    whiteSpace: "nowrap",
+  });
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
