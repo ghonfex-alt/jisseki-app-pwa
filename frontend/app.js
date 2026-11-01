@@ -13,8 +13,23 @@ if ('serviceWorker' in navigator) {
 // という説明は期限切れ削除だけの話で、容量逼迫時の削除とは別の話)。
 // 呼ぶだけでよく、失敗してもアプリの動作に影響しない(ベストエフォート)ため、
 // 起動時に一度呼んでおく。
-if (navigator.storage && navigator.storage.persist) {
-  navigator.storage.persist().catch(() => {});
+//
+// audit-loop(2026-11-02、2周目)の監査で指摘(Critical): 上の「失敗しても
+// アプリの動作に影響しない」はPromiseのreject(.catchで吸収)しか想定して
+// おらず、呼び出し自体が同期的に例外を投げるケース(買い手が実際に使う
+// かもしれない古いAndroid WebViewや、ネイティブアプリでラップされた
+// WKWebView等、Storage APIの実装が不完全な環境で起こりうる)を防げていなかった。
+// このコードはファイル先頭・トップレベルにあり、ここで例外が飛ぶと
+// このスクリプト自体の実行が止まり、下のDOMContentLoadedの登録
+// (アプリ全体のUI初期化)まで巻き込んで動かなくなる——「ベストエフォートで
+// 壊れない」というコメントの主張自体が嘘になってしまう。try/catchで
+// 同期例外も確実に吸収する。
+try {
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().catch(() => {});
+  }
+} catch (e) {
+  console.warn('storage.persist failed synchronously (ignored):', e);
 }
 
 // 2026-11-01 PWA化: OCRアップロード(_uploadAndNavigate等、下記)は非ゴールとして

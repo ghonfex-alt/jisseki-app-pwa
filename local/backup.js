@@ -172,7 +172,6 @@
     if (!_isPlainObject(data) || !_isPlainObject(data.stores)) {
       return { newer_date: null };
     }
-    var dailyEntries = data.stores.daily;
     var backupExportedAt = typeof data.exported_at === "string" ? data.exported_at : null;
 
     var allYears = (await dbGetAll("daily")) || [];
@@ -192,12 +191,42 @@
       });
     });
 
-    if (!newestDate || !backupExportedAt) {
+    // 現在ローカルに実際に保存された(ユーザーが編集した)日次データが
+    // 無ければ、そもそも失うものが無いので常にリスク無し。
+    if (!newestDate) {
       return { newer_date: null };
     }
-    // exported_atはISO日時文字列("2026-11-02T...")なので先頭10文字(日付部分)
-    // だけを比較する(同日中の時刻差までは警告の精度として不要)。
-    var backupDate = backupExportedAt.slice(0, 10);
+
+    // audit-loop(2026-11-02、2周目)の監査で発見(Critical、本来の目的と逆の
+    // 結果になっていた): exported_atが欠落・不正な形式の場合に
+    // 「比較できないから警告しない」としていたが、これは安全側と逆
+    // (「警告すべきかどうか判定できない」時に無警告を選ぶのは、この機能の
+    // 目的——元に戻せない上書きの前に必ず気付かせる——に反する)。
+    // YYYY-MM-DD形式として妥当な日付かを厳密に検証し、検証できない場合は
+    // 「判定不能」としてbackup_dateをnullにしたまま必ず警告を返す
+    // (newestDateが存在する=現在ローカルに実データがある場合のみこの関数の
+    // 呼び出し元に到達するため、ここでは「警告しない」という選択肢を
+    // 安全側に倒して無くす)。
+    var backupDate = null;
+    if (backupExportedAt) {
+      // exported_atはISO日時文字列("2026-11-02T...")なので先頭10文字
+      // (日付部分)を取り出し、実在する日付かDateオブジェクトで検証する
+      // (単なる正規表現の形だけでなく、"2026-13-99"のような範囲外の値も
+      // 弾く)。
+      var candidate = backupExportedAt.slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(candidate)) {
+        var parsed = new Date(candidate + "T00:00:00Z");
+        if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === candidate) {
+          backupDate = candidate;
+        }
+      }
+    }
+
+    if (backupDate === null) {
+      // exported_atが無い、または形式が不正で比較できない場合は
+      // 「判定不能」として必ず警告する(fail-safe)。
+      return { newer_date: newestDate, backup_date: null };
+    }
     if (newestDate > backupDate) {
       return { newer_date: newestDate, backup_date: backupDate };
     }

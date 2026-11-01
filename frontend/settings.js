@@ -202,7 +202,10 @@ function _renderLastBackupBanner(lastBackupAt) {
     </div>`;
     return;
   }
-  const daysAgo = Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000);
+  // audit-loop(2026-11-02、2周目)の監査で指摘: 端末の時計がズレている
+  // (または未来時刻)場合、差分が負数になり「-3日前」のような表示になりうる。
+  // 0未満は0に丸める(「今日」扱い)。
+  const daysAgo = Math.max(0, Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000));
   const stale = daysAgo >= 14;
   const color = stale ? "#fca5a5" : "#9ca3af";
   const bg = stale ? "#3f1d1d" : "#1f2937";
@@ -256,7 +259,18 @@ function _onBackupFileSelected(files) {
 // データの読み込み(全ストア上書き・元に戻せない)はそれよりもう一段重い操作のため、
 // frontend/app.js::_confirmDateやfrontend/inventory.js::_addModalと同じ、
 // 画面内に生成するオーバーレイ型のモーダルで実装する(計画書Task12の明示指示)。
+// audit-loop(2026-11-02、2周目)の監査で指摘(2体のエージェントが独立に発見):
+// この関数を同期から非同期(リスク判定APIをawait)に変えたことで、ファイル
+// 選択を連続ですばやく行うと(FileReaderのonloadが重なる等)、古い呼び出しの
+// 判定結果が新しい呼び出しの後に反映されたり、同じidのモーダルが二重に
+// DOMへ積まれたりしうる(_cancelBackupImport/_confirmBackupImportは
+// getElementByIdで最初の1つしか拾えないため、2つ目が操作不能のまま残る)。
+// モジュールレベルのトークンで「一番新しい呼び出しだけが実際にモーダルを
+// 描画する」ようにして再入を防ぐ。
+let _backupModalToken = 0;
+
 async function _showBackupImportConfirmModal() {
+  const myToken = ++_backupModalToken;
   const existing = document.getElementById("backup-import-modal");
   if (existing) existing.remove();
 
@@ -265,21 +279,31 @@ async function _showBackupImportConfirmModal() {
   // 可能性があるか(バックアップ後に保存された、より新しいデータがあるか)を
   // 一切示していなかった。インポート前にPOST /backup/check-import-riskで
   // 判定し、リスクがあれば警告を強める。
+  // 注: この判定は"daily"(実績データ)のみを対象にしており、スタッフ・
+  // シフト・在庫・設定(今回追加した単価設定等)の変更は対象外(2026-11-02、
+  // 2周目のaudit-loopで指摘)。過大な安心感を与えないよう、文言は
+  // 「実績データについて」の判定であることを明記する。
   let riskWarning = "";
   try {
     const risk = await App.api("POST", "/backup/check-import-risk", _pendingBackupImportData);
+    if (myToken !== _backupModalToken) return; // 再入: このawait中により新しい呼び出しが来た
     if (risk && risk.newer_date) {
+      const backupDateText = risk.backup_date
+        ? `${_settingsEscAttr(risk.backup_date)}時点`
+        : "の日時が不明・不正な形式";
       riskWarning = `
         <div style="background:#3f1d1d;border:1px solid #7f1d1d;border-radius:6px;padding:8px 10px;margin-bottom:12px;color:#fca5a5;font-size:12px;">
-          ⚠️ このバックアップ（${_settingsEscAttr(risk.backup_date)}時点）より後の
-          ${_settingsEscAttr(risk.newer_date)}に保存した実績データがあります。
+          ⚠️ このバックアップ（${backupDateText}）より後の
+          ${_settingsEscAttr(risk.newer_date)}に保存した実績データ（日次入力）があります。
           読み込むと、その後に入力したデータは失われます。
+          （スタッフ・シフト・在庫・設定の変更については、この判定は対象外です）
         </div>`;
     }
   } catch (e) {
     // 判定自体に失敗しても読み込み自体は止めない(fail-open。既存の静的な
     // 注意文は常に表示されるため、最低限の注意喚起は残る)。
   }
+  if (myToken !== _backupModalToken) return; // 再入: 判定完了を待つ間により新しい呼び出しが来た
 
   const modal = document.createElement("div");
   modal.id = "backup-import-modal";
@@ -294,6 +318,8 @@ async function _showBackupImportConfirmModal() {
       <div style="font-size:13px;color:#d1d5db;margin-bottom:16px;">
         現在アプリに保存されている全データ（店舗・スタッフ・実績・シフト・在庫・設定など）が、
         選択したファイルの内容で上書きされます。この操作は元に戻せません。
+        （ライセンス認証情報だけは対象外です。新しい端末やアプリの再インストール後に
+        このバックアップを読み込む場合は、別途ライセンスキーを入力してください）
       </div>
       <div style="display:flex;gap:8px;">
         <button onclick="_cancelBackupImport()"

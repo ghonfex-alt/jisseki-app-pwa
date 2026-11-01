@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v5';
+const CACHE = 'jisseki-pwa-v6';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に

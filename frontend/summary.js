@@ -154,10 +154,28 @@ async function _loadSummary(year, month) {
     // 2026-11-02追加: 平均滞在時間の概算(入店・退店時刻は記録していないため、
     // 延長回数[30分単位]から逆算する——基本時間＋延長回数×30分÷客数。
     // 実測ではなく概算値であることをUI側にも明記する(frontend/settings.js参照)。
+    //
+    // audit-loop(2026-11-02、2周目)の監査で発見(Critical、実際に再現確認済み):
+    // local/backup.js::importBackupは"daily"ストアへ生のdbPutを行うだけで、
+    // putDay()が行っているような数値型バリデーション(_validateStaffEntries)
+    // を一切通さない。そのため、手編集または壊れたバックアップファイルを
+    // 読み込むと、extension_countが文字列("3"等)になった状態でここに届く
+    // ことがありうる。(e&&e.extension_count)||0 は falsy判定しかしておらず
+    // 型を見ないため、reduceの初期値0(number)に文字列を+演算すると暗黙の
+    // 文字列結合が起き(例: 0+"2"+"3"="023")、その後の*30/customersで
+    // 一見もっともらしいが全く不正な数値になる(実際にNode上で再現: "023"
+    // は数値コンテキストで23として使われ、客数で割ると実際の値の何十倍にも
+    // 狂う)。Number(...)で明示的に数値化し、NaNになったら0として扱う。
     const extensionTotal = days.reduce((s, d) =>
-      s + (d.staff_entries || []).reduce((s2, e) => s2 + ((e && e.extension_count) || 0), 0), 0);
+      s + (d.staff_entries || []).reduce((s2, e) => {
+        const n = Number(e && e.extension_count);
+        return s2 + (Number.isFinite(n) ? n : 0);
+      }, 0), 0);
+    // 同じ理由(未検証のバックアップ由来データ)で延長回数が負数になりうる
+    // ケースも、滞在時間が負の表示("滞在 約-12分"等)にならないよう0で
+    // 下限を設ける。
     const avgStayMin = customers > 0
-      ? Math.round((window.BASE_SESSION_MINUTES ?? 60) + (extensionTotal * 30 / customers))
+      ? Math.max(0, Math.round((window.BASE_SESSION_MINUTES ?? 60) + (extensionTotal * 30 / customers)))
       : null;
 
     combinedSales     += sales;
@@ -213,8 +231,9 @@ async function _loadSummary(year, month) {
           <span>${customers}人</span>
           <span>${openDays}日</span>
           <span>単 ¥${avgUnit.toLocaleString()}</span>
-          ${avgStayMin !== null ? `<span title="延長回数からの概算値（実測ではありません）">滞在 約${avgStayMin}分</span>` : ''}
+          ${avgStayMin !== null ? `<span>滞在 約${avgStayMin}分<sup style="color:#6b7280;">※</sup></span>` : ''}
         </div>
+        ${avgStayMin !== null ? `<div style="font-size:9px;color:#4b5563;margin-top:2px;">※延長回数からの概算値（実測ではありません）</div>` : ''}
         ${histRow}`}
       </div>`;
   }).join("");

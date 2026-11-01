@@ -312,13 +312,72 @@ test("checkImportDataLossRisk: バックアップより後に保存した日次�
   assert.strictEqual(result.backup_date, "2026-06-01");
 });
 
-test("checkImportDataLossRisk: _user_edited:falseなレコードは警告対象にしない(未編集の空枠)", async () => {
+// audit-loop(2026-11-02、2周目)の監査で指摘: テスト名は"_user_edited:false"を
+// 検証すると主張していたが、実際にはフィールド自体が無い("未編集")ケースしか
+// 書かれていなかった。両方を別テストとして明示する。
+test("checkImportDataLossRisk: _user_editedフィールドが無いレコード(未編集の空枠)は警告対象にしない", async () => {
   await _clearAll();
   await _ensureStore("risk-c");
   // _user_editedが付かない形で直接dbPut(putDay経由ではない=未編集扱い)。
   await dbPut("daily", 2026, { "2026-06-15": { "risk-c": { sales_excl_tax: 0 } } });
 
   const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "2026-06-01T00:00:00.000Z" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, null);
+});
+
+test("checkImportDataLossRisk: _user_edited:falseが明示されたレコードも警告対象にしない", async () => {
+  await _clearAll();
+  await _ensureStore("risk-c2");
+  await dbPut("daily", 2026, { "2026-06-15": { "risk-c2": { sales_excl_tax: 0, _user_edited: false } } });
+
+  const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "2026-06-01T00:00:00.000Z" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, null);
+});
+
+// audit-loop(2026-11-02、2周目)の監査で発見(Critical、本来の目的と逆の結果に
+// なっていた): exported_atが欠落・不正な形式の場合に「比較できないから
+// 警告しない」としていたのは安全側と逆(無警告=「安全」という誤ったシグナルに
+// なる)。現在ローカルに実データがある限り、判定不能な場合は必ず警告する
+// ことを確認する(fail-safeの回帰テスト)。
+test("checkImportDataLossRisk: exported_atが欠落している場合は判定不能として警告する(fail-safeの回帰テスト)", async () => {
+  await _clearAll();
+  await _ensureStore("risk-d");
+  await putDay(2026, "2026-06-20", "risk-d", { sales_excl_tax: 500 });
+
+  const backup = { format: "jisseki-app-pwa-backup", stores: {} }; // exported_atが無い
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, "2026-06-20");
+  assert.strictEqual(result.backup_date, null);
+});
+
+test("checkImportDataLossRisk: exported_atが不正な形式の場合は判定不能として警告する(fail-safeの回帰テスト)", async () => {
+  await _clearAll();
+  await _ensureStore("risk-e");
+  await putDay(2026, "2026-06-20", "risk-e", { sales_excl_tax: 500 });
+
+  const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "unknown-format" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, "2026-06-20");
+  assert.strictEqual(result.backup_date, null);
+});
+
+test("checkImportDataLossRisk: exported_atが存在しない日付(範囲外)の場合も判定不能として警告する(fail-safeの回帰テスト)", async () => {
+  await _clearAll();
+  await _ensureStore("risk-f");
+  await putDay(2026, "2026-06-20", "risk-f", { sales_excl_tax: 500 });
+
+  const backup = { format: "jisseki-app-pwa-backup", stores: {}, exported_at: "2026-13-99T00:00:00.000Z" };
+  const result = await checkImportDataLossRisk(backup);
+  assert.strictEqual(result.newer_date, "2026-06-20");
+  assert.strictEqual(result.backup_date, null);
+});
+
+test("checkImportDataLossRisk: ローカルに実編集データが無ければexported_at欠落でも警告しない", async () => {
+  await _clearAll();
+  // 日次データを一切保存していない状態(newestDateが無い)。
+  const backup = { format: "jisseki-app-pwa-backup", stores: {} };
   const result = await checkImportDataLossRisk(backup);
   assert.strictEqual(result.newer_date, null);
 });

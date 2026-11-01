@@ -174,3 +174,21 @@ test("localApiCall経由でのルーティング: GET/PUT /settings", async () =
   assert.equal(after.wanope_bonus, 500);
   assert.equal(after.incentive_rates.catch.yen_per_count, 70);
 });
+
+// audit-loop(2026-11-02、2周目)の監査で指摘(設計批評・minor): last_backup_at
+// はupdateSettings()を経由せず、local/backup.js::_recordBackupExportedが
+// dbUpdate()で直接settingsレコードに書き込む別経路を持つ。updateSettings()
+// 自身はこのフィールドの存在を知らないため、将来「未知のキーを除去する」
+// ような変更が入ると静かに消えうる(2026-11-01に実際に起きた直列化漏れ事故と
+// 同じ「同じレコードへの複数の書き込み経路」というカテゴリの問題)。
+// この回帰テストで、updateSettings()の通常の呼び出しがlast_backup_atを
+// 消さないことを固定する。
+test("【回帰】updateSettings: last_backup_at(backup.js側が直接書き込む別経路のフィールド)を消さない", async () => {
+  // local/backup.js::_recordBackupExportedと同じ形で直接書き込む
+  // (backup.jsをrequireせずに同じ効果を再現する)。
+  await dbPut("settings", "global", { last_backup_at: "2026-10-01T00:00:00.000Z" });
+
+  const updated = await updateSettings({ wanope_bonus: 300 });
+  assert.equal(updated.last_backup_at, "2026-10-01T00:00:00.000Z", "last_backup_atが消えている");
+  assert.equal(updated.wanope_bonus, 300);
+});
