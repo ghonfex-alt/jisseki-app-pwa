@@ -14,9 +14,10 @@
  * レコード構造と1対1対応)。local/store.jsのdeleteStoreが既にこの前提で
  * 書かれており(コメント参照)、本ファイルもそれに合わせた。
  *
- * 計画書(Task4)の移植対象外(今回は意図的に移植しない):
- * - `GET /{year}/annual`(get_annual): Produces一覧(計画書Task4)に含まれて
- *   いないため見送り。必要になれば別タスクで追加する。
+ * 追記(Task4完了後): `GET /{year}/annual`(get_annual)は当初計画書のProduces
+ * 一覧に無く見送っていたが、frontend/annual.jsが実際にこのエンドポイントを
+ * 呼んでいるため追加した(JISSEKI_SRCの静的履歴ファイル補完部分のみ、買い手の
+ * 新規インストールには存在しないファイルのため移植対象外とした)。
  *
  * 新設(JISSEKI_SRCには存在しない): memoフィールド(自由記述、バリデーション無し)、
  * staff_entriesの各要素へのcatch_count/call_count/extension_count
@@ -296,10 +297,56 @@
     return { reset: true, date: date, store_id: storeId };
   }
 
+  // get_annual(daily.py)の移植。年次月別集計: {store_id: [{month, sales, ...}]}。
+  // JISSEKI_SRCの静的履歴ファイル(monthly_<store_id>_history.json)による補完は、
+  // オーナーの過去データ移行専用の仕組みであり、買い手の新規インストールには
+  // 該当する静的ファイルが存在しないため移植しない(当初Task4で見送った箇所を
+  // frontend/annual.jsが実際にこのエンドポイントを呼ぶと判明したため追加)。
+  async function getAnnual(year) {
+    var daily = (await dbGet(DAILY_STORE, year)) || {};
+    var monthly = {};
+
+    Object.keys(daily).forEach(function (dateStr) {
+      var stores = daily[dateStr];
+      if (!_isPlainObject(stores) || dateStr.indexOf(String(year)) !== 0) return;
+      var ym = dateStr.slice(0, 7);
+      Object.keys(stores).forEach(function (storeId) {
+        var day = stores[storeId];
+        if (!_isPlainObject(day) || day.closed || !((day.sales_excl_tax || 0) > 0)) return;
+        if (!monthly[storeId]) monthly[storeId] = {};
+        if (!monthly[storeId][ym]) monthly[storeId][ym] = { sales: 0, customers: 0, open_days: 0 };
+        monthly[storeId][ym].sales += day.sales_excl_tax || 0;
+        monthly[storeId][ym].customers += day.customer_count || 0;
+        monthly[storeId][ym].open_days += 1;
+      });
+    });
+
+    var result = {};
+    Object.keys(monthly).forEach(function (storeId) {
+      var months = monthly[storeId];
+      var yms = Object.keys(months).sort();
+      if (yms.length === 0) return;
+      result[storeId] = yms.map(function (ym) {
+        var v = months[ym];
+        return {
+          month: ym,
+          sales: v.sales,
+          customers: v.customers,
+          open_days: v.open_days,
+          avg_daily_sales: v.open_days ? Math.round(v.sales / v.open_days) : 0,
+          avg_per_customer: v.customers ? Math.round(v.sales / v.customers) : 0,
+          from_history: false,
+        };
+      });
+    });
+    return result;
+  }
+
   root.dailyEmptyDay = emptyDay;
   root.getDay = getDay;
   root.getMonth = getMonth;
   root.getMonthAll = getMonthAll;
+  root.getAnnual = getAnnual;
   root.putDay = putDay;
   root.resetDay = resetDay;
 
@@ -311,6 +358,9 @@
   // /{year}/{date}/{store_id} to avoid route shadowing」と同じ理由)。
   // "/daily/:year/month/:month/:store_id" はセグメント数が6で異なるため
   // 衝突しないが、分かりやすさのためここでもym・dayより先に置く。
+  registerRoute("GET", "/daily/:year/annual", function (params) {
+    return getAnnual(parseInt(params.year, 10));
+  });
   registerRoute("GET", "/daily/:year/month/:month/:store_id", function (params) {
     return getMonth(parseInt(params.year, 10), parseInt(params.month, 10), params.store_id);
   });

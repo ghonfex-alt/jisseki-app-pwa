@@ -296,3 +296,28 @@ test("localApiCall経由でのルーティング: GET/PUT/POST(reset) /daily/...
   const afterReset = await localApiCall("GET", `/daily/${YEAR}/2026-01-23/d-route`);
   assert.deepStrictEqual(afterReset, dailyEmptyDay());
 });
+
+test("getAnnual: 月別集計(売上・客数・営業日数・平均)を正しく返す", async () => {
+  await ensureStore("d-annual");
+  await putDay(YEAR, "2026-02-01", "d-annual", { sales_excl_tax: 10000, customer_count: 5 });
+  await putDay(YEAR, "2026-02-02", "d-annual", { sales_excl_tax: 20000, customer_count: 10 });
+  await putDay(YEAR, "2026-02-03", "d-annual", { sales_excl_tax: 0, customer_count: 0, closed: true });
+  await putDay(YEAR, "2026-03-01", "d-annual", { sales_excl_tax: 5000, customer_count: 2 });
+
+  const annual = await localApiCall("GET", `/daily/${YEAR}/annual`);
+  assert.ok(annual["d-annual"]);
+  const feb = annual["d-annual"].find((m) => m.month === "2026-02");
+  assert.strictEqual(feb.sales, 30000);
+  assert.strictEqual(feb.customers, 15);
+  assert.strictEqual(feb.open_days, 2);
+  assert.strictEqual(feb.avg_daily_sales, 15000);
+  assert.strictEqual(feb.avg_per_customer, 2000);
+  const mar = annual["d-annual"].find((m) => m.month === "2026-03");
+  assert.strictEqual(mar.sales, 5000);
+});
+
+test("getAnnual: データが無い店舗は結果に含まれない", async () => {
+  await ensureStore("d-annual-empty");
+  const annual = await localApiCall("GET", `/daily/${YEAR}/annual`);
+  assert.strictEqual(annual["d-annual-empty"], undefined);
+});
