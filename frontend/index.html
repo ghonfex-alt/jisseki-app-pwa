@@ -35,7 +35,7 @@
        各local/*.jsの先頭コメントが指定する依存関係(db.js → local-api.js →
        local/store.js → local/staff.js → local/daily.js → local/tax-table-r8.js →
        local/payroll.js → local/payroll-admin.js → local/export.js →
-       local/shifts.js → local/inventory.js → local/targets.js →
+       local/backup.js → local/shifts.js → local/inventory.js → local/targets.js →
        local/settings.js → local/license.js)を満たす順序。
        index.htmlは frontend/ 配下にあり、db.js・local-api.js・local/*.jsは
        リポジトリ直下にあるため ../ で参照する。 -->
@@ -48,6 +48,7 @@
   <script src="../local/payroll.js"></script>
   <script src="../local/payroll-admin.js"></script>
   <script src="../local/export.js"></script>
+  <script src="../local/backup.js"></script>
   <script src="../local/shifts.js"></script>
   <script src="../local/inventory.js"></script>
   <script src="../local/targets.js"></script>

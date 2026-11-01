@@ -23,11 +23,119 @@ App.register("settings", async function() {
       <div style="flex:1;min-width:280px;" id="store-settings"></div>
       <div style="flex:1;min-width:280px;" id="staff-settings"></div>
     </div>
+    <div class="card" style="margin-top:16px;">
+      <h3 style="color:#6b7280;font-size:12px;text-transform:uppercase;margin-bottom:12px;">データのバックアップ</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <button class="btn-primary" style="font-size:12px;padding:8px 16px;"
+          onclick="exportBackupData()">データを書き出す</button>
+        <button style="background:#374151;border:none;color:#f3f4f6;font-size:12px;padding:8px 16px;border-radius:6px;cursor:pointer;"
+          onclick="document.getElementById('backup-import-input').click()">データを読み込む</button>
+        <input type="file" id="backup-import-input" accept="application/json,.json" style="display:none;"
+          onchange="_onBackupFileSelected(this.files)">
+      </div>
+      <div style="color:#6b7280;font-size:11px;margin-top:8px;">
+        書き出したJSONファイルは端末に保存してください。読み込みは現在アプリに保存されている
+        全データを上書きします。
+      </div>
+    </div>
   `;
 
   renderStoreSettings(stores);
   renderStaffSettings(allStaff, stores);
 });
+
+// ── データのエクスポート/インポート(新設。local/backup.js参照) ─────────────
+
+async function exportBackupData() {
+  try {
+    const result = await App.api("POST", "/backup/export");
+    _showToast?.(`✓ 書き出しました（${result.filename}）`);
+  } catch (e) {
+    _showToast?.("⚠️ 書き出し失敗: " + e.message);
+  }
+}
+
+// FileReaderで読み込んだ内容を、ユーザーがモーダルで確認するまで保持する一時変数。
+let _pendingBackupImportData = null;
+
+function _onBackupFileSelected(files) {
+  const file = files && files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try {
+      data = JSON.parse(reader.result);
+    } catch (e) {
+      alert("JSONファイルの読み込みに失敗しました。ファイルが壊れている可能性があります。");
+      return;
+    }
+    _pendingBackupImportData = data;
+    _showBackupImportConfirmModal();
+  };
+  reader.onerror = () => {
+    alert("ファイルの読み込みに失敗しました。");
+  };
+  reader.readAsText(file);
+  // 同じファイルを選び直した場合もonchangeが発火するよう、選択状態をリセットする。
+  const input = document.getElementById("backup-import-input");
+  if (input) input.value = "";
+}
+
+// 「現在のデータを上書きします。よろしいですか」の確認。
+// このプロジェクトはネイティブのconfirm()を多くの画面で使っているが、
+// データの読み込み(全ストア上書き・元に戻せない)はそれよりもう一段重い操作のため、
+// frontend/app.js::_confirmDateやfrontend/inventory.js::_addModalと同じ、
+// 画面内に生成するオーバーレイ型のモーダルで実装する(計画書Task12の明示指示)。
+function _showBackupImportConfirmModal() {
+  const existing = document.getElementById("backup-import-modal");
+  if (existing) existing.remove();
+  const modal = document.createElement("div");
+  modal.id = "backup-import-modal";
+  Object.assign(modal.style, {
+    position: "fixed", inset: "0", background: "rgba(0,0,0,0.7)",
+    display: "flex", alignItems: "center", justifyContent: "center", zIndex: "9999",
+  });
+  modal.innerHTML = `
+    <div style="background:#1f2937;border-radius:12px;padding:20px;max-width:360px;width:90%;">
+      <div style="font-size:14px;font-weight:700;color:#f87171;margin-bottom:10px;">データを読み込みますか？</div>
+      <div style="font-size:13px;color:#d1d5db;margin-bottom:16px;">
+        現在アプリに保存されている全データ（店舗・スタッフ・実績・シフト・在庫・設定など）が、
+        選択したファイルの内容で上書きされます。この操作は元に戻せません。
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="_cancelBackupImport()"
+          style="flex:1;padding:10px;background:#374151;border:none;border-radius:8px;color:#9ca3af;font-size:14px;cursor:pointer;">キャンセル</button>
+        <button onclick="_confirmBackupImport()"
+          style="flex:1;padding:10px;background:#7c3aed;border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;">上書きして読み込む</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _cancelBackupImport() {
+  _pendingBackupImportData = null;
+  document.getElementById("backup-import-modal")?.remove();
+}
+
+async function _confirmBackupImport() {
+  const data = _pendingBackupImportData;
+  _pendingBackupImportData = null;
+  document.getElementById("backup-import-modal")?.remove();
+  if (!data) return;
+  try {
+    await App.api("POST", "/backup/import", data);
+    _showToast?.("✓ データを読み込みました。再読み込みします…");
+    // インポートは全ストアを書き換えるため、他モジュールが保持するメモリ上の
+    // キャッシュ(local/payroll-admin.jsの確定月キャッシュ、App._getCache、
+    // window.STORE_NAME等)が古いままになる。個別に全部洗い出して無効化するより、
+    // ページ全体をリロードして確実に最新状態から始める方が安全(local/backup.js
+    // 先頭コメント参照)。
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    alert("読み込みに失敗しました: " + e.message);
+  }
+}
 
 const _DOW_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
 

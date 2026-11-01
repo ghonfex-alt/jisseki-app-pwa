@@ -103,11 +103,53 @@
     await requestToPromise(store.delete(key));
   }
 
+  // dbGetAllは値だけを返しキーを失ってしまう(IndexedDBのgetAll()の仕様上、
+  // out-of-lineキー——本アプリの全ストアがそう、createObjectStoreにkeyPathを
+  // 指定していないため——はカーソルでしか読めない)。Task3(local/targets.js)・
+  // Task6(local/payroll-admin.js)が個別にカーソルを書いて同じ問題を回避して
+  // いたが、Task12(local/backup.js、全ストアの汎用バックアップ/リストア)でも
+  // 同じ理由でキーが必須になり、3つ目の重複実装になりそうだったため、
+  // ここで共通ヘルパーとして一本化する(db.js自体は小さく基盤的なファイルで、
+  // 既存のdbGet/dbPut/dbGetAll/dbDelete/dbOpenの戻り値・挙動は一切変えていない
+  // ので、Task1〜11のテストへの影響は無い——追加のみ)。
+  async function dbGetAllWithKeys(storeName) {
+    var db = await dbOpen();
+    var tx = db.transaction(storeName, "readonly");
+    var store = tx.objectStore(storeName);
+    var result = [];
+    return new Promise(function (resolve, reject) {
+      var req = store.openCursor();
+      req.onsuccess = function () {
+        var cursor = req.result;
+        if (cursor) {
+          result.push({ key: cursor.key, value: cursor.value });
+          cursor.continue();
+        } else {
+          resolve(result);
+        }
+      };
+      req.onerror = function () {
+        reject(req.error);
+      };
+    });
+  }
+
+  // ストアの全件を削除する(backup.jsの「読み込み前に全件消してから書き戻す」
+  // 用途のために追加。他タスクはこれまで使っていない)。
+  async function dbClear(storeName) {
+    var db = await dbOpen();
+    var tx = db.transaction(storeName, "readwrite");
+    var store = tx.objectStore(storeName);
+    await requestToPromise(store.clear());
+  }
+
   root.dbOpen = dbOpen;
   root.dbGet = dbGet;
   root.dbGetAll = dbGetAll;
+  root.dbGetAllWithKeys = dbGetAllWithKeys;
   root.dbPut = dbPut;
   root.dbDelete = dbDelete;
+  root.dbClear = dbClear;
   // 他タスク(例: backup.js のエクスポート/インポート)がストア一覧を
   // 二重管理せずに済むように公開しておく。
   root.DB_STORE_NAMES = STORE_NAMES.slice();
