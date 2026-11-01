@@ -32,6 +32,20 @@ try {
   console.warn('storage.persist failed synchronously (ignored):', e);
 }
 
+// 2026-11-02追加: Android Chrome等は「ホーム画面に追加」を提案できる
+// beforeinstallpromptイベントを発火するが、発火タイミングはページ読み込み
+// 直後の早い段階で、かつ一度しか飛ばない。setup.js(初回セットアップ画面)が
+// このイベントを使ってワンタップで実際のインストールダイアログを出す
+// (iOSには同等のJS APIが無いため、iOSは手順の案内表示のみになる——
+// setup.js参照)には、ファイルの一番早い段階でリスナーを張って取っておく
+// 必要がある。preventDefault()しないとブラウザの自動バナーと二重に
+// なりうるため呼んでおく。
+window._deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  window._deferredInstallPrompt = e;
+});
+
 // 2026-11-01 PWA化: OCRアップロード(_uploadAndNavigate等、下記)は非ゴールとして
 // サーバー側実装を移植していないため、このAPI定数へのfetchは現状どれも404になる
 // (Task11の範囲外。OCR/日報写真機能自体を使わなければ影響しない)。
