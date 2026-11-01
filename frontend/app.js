@@ -1,7 +1,13 @@
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW:', e));
+  // 相対パスで登録する(GitHub Pagesがサブパス配信のため。絶対パス'/sw.js'だと
+  // ドメインルート直下を探しにいき404になる)。index.htmlと同じディレクトリの
+  // sw.jsを指す。
+  navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW:', e));
 }
 
+// 2026-11-01 PWA化: OCRアップロード(_uploadAndNavigate等、下記)は非ゴールとして
+// サーバー側実装を移植していないため、このAPI定数へのfetchは現状どれも404になる
+// (Task11の範囲外。OCR/日報写真機能自体を使わなければ影響しない)。
 const API = window.location.origin;
 
 // 全画面共通定数（/storesから動的構築、/configで上書き）
@@ -127,22 +133,26 @@ const App = {
     this._getCache = {};  // 書き込み成功後は古いキャッシュを信用しない
     return result;
   },
+  // 2026-11-01 PWA化(Task11): fetchでのHTTPリクエストから、local-api.js
+  // (サーバー不要・IndexedDB直結のローカルルーター)呼び出しへ差し替え。
+  // App.api自体のキャッシュ・重複排除ロジック(_inFlightGets/_getCache)は
+  // このメソッドの「中身」だけ差し替えれば動く設計なので、上のapi()は無改修。
   async _rawApi(method, path, body) {
-    const res = await fetch(API + path, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const err = new Error(await res.text());
-      // ステータスコードを付与しておく。無いと呼び出し元が「給与確定済み(423)で
-      // 保存できない」ことと「単なるネットワーク障害」を区別できず、423を
-      // オフライン扱いにして永久にリトライし続けるバグの元になる
-      // (2026-08-06のレビューで発見: shift-app.jsが423を握りつぶしていた)。
-      err.status = res.status;
-      throw err;
+    try {
+      return await localApiCall(method, path, body);
+    } catch (e) {
+      // localApiCallが投げるApiErrorを、旧fetch版_rawApiが投げていたのと同じ
+      // {message, status}形のErrorにマッピングする。呼び出し側は全箇所
+      // `.catch(e => ...)`でe.statusを見て423(給与確定済み)等を判定しているため
+      // (上のコメント・2026-08-06のレビュー参照)、ここで形を揃えないと
+      // 既存のエラーハンドリングが静かに壊れる。
+      if (e instanceof ApiError) {
+        const err = new Error(e.message);
+        err.status = e.status;
+        throw err;
+      }
+      throw e;
     }
-    return res.json();
   }
 };
 
@@ -175,6 +185,13 @@ async function _loadStoreInfo() {
 window._loadStoreInfo = _loadStoreInfo;
 
 window.addEventListener("DOMContentLoaded", async () => {
+  // local/payroll-admin.jsのisLocked()は同期関数で、メモリキャッシュ
+  // (_locksCache)だけを見る。キャッシュはIndexedDBからの非同期読み込みが
+  // 終わるまで空のままなので、ここでawaitせずに画面を表に出すと、前回セッションで
+  // 確定済みの月が一瞬「未確定」として読める競合状態になる(Task6の報告で
+  // 明示的に指摘された既知のリスク)。ユーザー操作を許可する前に必ず完了させる。
+  await ensureLocksLoaded();
+
   try {
     const settings = await App.api("GET", "/settings");
     // 0も正当な設定値(ワンオペ手当なし)なので、truthy判定ではなく

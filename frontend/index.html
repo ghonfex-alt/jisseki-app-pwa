@@ -8,9 +8,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="実績管理">
-  <link rel="manifest" href="/manifest.json">
+  <link rel="manifest" href="manifest.json">
   <title>実績管理</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="app">
@@ -20,24 +20,51 @@
       <button onclick="App.go('annual')">年次</button>
       <button onclick="App.go('daily')">日次入力</button>
       <button onclick="App.go('payroll')">給与確認</button>
-      <button onclick="App.go('nippo-log')">日報ログ</button>
-      <button onclick="App.go('reflections')">振り返り</button>
       <button onclick="App.go('shift')">シフト</button>
       <button onclick="App.go('inventory')">在庫</button>
       <button onclick="App.go('settings')">設定</button>
     </nav>
     <main id="main"></main>
   </div>
-  <script src="/static/app.js"></script>
-  <script src="/static/setup.js"></script>
-  <script src="/static/summary.js"></script>
-  <script src="/static/nippo-log.js"></script>
-  <script src="/static/settings.js"></script>
-  <script src="/static/reflections.js"></script>
-  <script src="/static/daily.js"></script>
-  <script src="/static/payroll.js"></script>
-  <script src="/static/annual.js"></script>
-  <script src="/static/shift-app.js"></script>
-  <script src="/static/inventory.js"></script>
+
+  <!-- SheetJS(XLSX): local/export.jsのExcel出力が参照するグローバルXLSXを提供する。
+       local/export.jsより前に読み込むこと(タスク10の計画書記載のpinned version)。 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <!-- ローカルAPI層: サーバー不要で動かすためのIndexedDBラッパー+ルーター。
+       各local/*.jsの先頭コメントが指定する依存関係(db.js → local-api.js →
+       local/store.js → local/staff.js → local/daily.js → local/tax-table-r8.js →
+       local/payroll.js → local/payroll-admin.js → local/export.js →
+       local/shifts.js → local/inventory.js → local/targets.js →
+       local/settings.js → local/license.js)を満たす順序。
+       index.htmlは frontend/ 配下にあり、db.js・local-api.js・local/*.jsは
+       リポジトリ直下にあるため ../ で参照する。 -->
+  <script src="../db.js"></script>
+  <script src="../local-api.js"></script>
+  <script src="../local/store.js"></script>
+  <script src="../local/staff.js"></script>
+  <script src="../local/daily.js"></script>
+  <script src="../local/tax-table-r8.js"></script>
+  <script src="../local/payroll.js"></script>
+  <script src="../local/payroll-admin.js"></script>
+  <script src="../local/export.js"></script>
+  <script src="../local/shifts.js"></script>
+  <script src="../local/inventory.js"></script>
+  <script src="../local/targets.js"></script>
+  <script src="../local/settings.js"></script>
+  <script src="../local/license.js"></script>
+
+  <!-- 画面側(frontend/*.js): App.apiの呼び先がローカルAPIに差し替わっている以外は
+       既存のまま。振り返り(reflections.js)・日報ログ(nippo-log.js)は非ゴールのため
+       このリポジトリには存在せず、読み込まない。 -->
+  <script src="app.js"></script>
+  <script src="setup.js"></script>
+  <script src="summary.js"></script>
+  <script src="settings.js"></script>
+  <script src="daily.js"></script>
+  <script src="payroll.js"></script>
+  <script src="annual.js"></script>
+  <script src="shift-app.js"></script>
+  <script src="inventory.js"></script>
 </body>
 </html>
