@@ -10,6 +10,21 @@ function _settingsEscAttr(s) {
   return d.innerHTML.replace(/"/g, "&quot;");
 }
 
+// local/settings.js::updateSettings()はdbGet→フィールドマージ→dbPutの
+// read-modify-write。ワンオペ手当とキャッチ/呼び/延長の単価は別々の
+// onchangeハンドラから個別にPUT /settingsを呼ぶため、ユーザーが3つの
+// インセンティブ欄を連続して編集(Tab/クリックで素早く移動)すると、
+// 複数のPUTが並行実行され、後から完了した側が先に完了した側の書き込みを
+// 古いスナップショットで上書きして消してしまう(実機検証で実際に発生：
+// キャッチ100円・延長200円は保存されたが呼びだけ0円に戻っていた)。
+// 直列化キューで1件ずつ確実に完了させてから次を送る。
+let _settingsWriteChain = Promise.resolve();
+function _queueSettingsWrite(fn) {
+  const result = _settingsWriteChain.then(fn, fn);
+  _settingsWriteChain = result.catch(() => {});
+  return result;
+}
+
 App.register("settings", async function() {
   const main = document.getElementById("main");
   const [stores, allStaff, incentiveSettings] = await Promise.all([
@@ -103,7 +118,7 @@ async function updateWanopeBonus(value) {
   const n = parseInt(value, 10);
   const bonus = Number.isNaN(n) || n < 0 ? 0 : n;
   try {
-    const result = await App.api("PUT", "/settings", { wanope_bonus: bonus });
+    const result = await _queueSettingsWrite(() => App.api("PUT", "/settings", { wanope_bonus: bonus }));
     // app.js起動時に一度だけ読み込んだキャッシュ(window.WANOPE_BONUS)を
     // ここで即時更新しないと、再読み込みするまで日次入力画面の見積額が
     // 古い単価のままになる(ワンオペ手当は今回初めて編集可能になった値なので
@@ -119,7 +134,9 @@ async function updateIncentiveRate(kind, value) {
   const n = parseInt(value, 10);
   const yen = Number.isNaN(n) || n < 0 ? 0 : n;
   try {
-    const result = await App.api("PUT", "/settings", { incentive_rates: { [kind]: { yen_per_count: yen } } });
+    const result = await _queueSettingsWrite(() =>
+      App.api("PUT", "/settings", { incentive_rates: { [kind]: { yen_per_count: yen } } })
+    );
     // updateWanopeBonusと同じ理由(日次入力画面の見積額キャッシュを即時更新)。
     window.INCENTIVE_RATES = result.incentive_rates;
     _showToast?.("✓ 保存しました");
