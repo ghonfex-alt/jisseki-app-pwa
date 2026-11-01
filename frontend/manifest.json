@@ -3,6 +3,7 @@
   "short_name": "実績管理",
   "description": "シーシャバー実績・勤怠管理アプリ",
   "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
