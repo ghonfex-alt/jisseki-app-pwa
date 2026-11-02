@@ -31,11 +31,12 @@ jobs:
             --exclude='docs' --exclude='package.json' --exclude='package-lock.json' \
             ./ _site/
 
+      # 公式cloudflare/pages-actionは非推奨(メンテナンス終了)のため、
+      # 後継のwrangler-actionからpages deployコマンドで配信する
+      # (2026-11-02、WebSearchで確認した現行の推奨方法)。
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          projectName: jisseki-app-pwa
-          directory: _site
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          command: pages deploy _site --project-name=jisseki-app-pwa
