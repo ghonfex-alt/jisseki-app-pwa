@@ -1,0 +1,41 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cf-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # deploy-pages.yml(GitHub Pages版、2026-11-02にCloudflare Pages+Access
+      # 移行に伴い廃止)と同じステージング方針を踏襲する: リポジトリの相対パス
+      # 構造(frontend/index.htmlが../db.js等を参照する)をそのまま配信し、
+      # 開発専用のものだけを除外する。
+      - name: Stage site (exclude dev-only paths)
+        run: |
+          mkdir -p _site
+          rsync -a --exclude='.git' --exclude='node_modules' --exclude='.github' \
+            --exclude='_site' --exclude='tests' --exclude='.superpowers' \
+            --exclude='docs' --exclude='package.json' --exclude='package-lock.json' \
+            ./ _site/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          projectName: jisseki-app-pwa
+          directory: _site
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
