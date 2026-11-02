@@ -38,7 +38,6 @@ const LOCAL_FILES = [
   "local/inventory.js",
   "local/targets.js",
   "local/settings.js",
-  "local/license.js",
 ];
 
 const FRONTEND_FILES = [

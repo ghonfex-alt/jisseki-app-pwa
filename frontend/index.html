@@ -36,7 +36,7 @@
        local/store.js → local/staff.js → local/daily.js → local/tax-table-r8.js →
        local/payroll.js → local/payroll-admin.js → local/export.js →
        local/backup.js → local/shifts.js → local/inventory.js → local/targets.js →
-       local/settings.js → local/license.js)を満たす順序。
+       local/settings.js)を満たす順序。
        index.htmlは frontend/ 配下にあり、db.js・local-api.js・local/*.jsは
        リポジトリ直下にあるため ../ で参照する。 -->
   <script src="../db.js"></script>
@@ -53,7 +53,6 @@
   <script src="../local/inventory.js"></script>
   <script src="../local/targets.js"></script>
   <script src="../local/settings.js"></script>
-  <script src="../local/license.js"></script>
 
   <!-- 画面側(frontend/*.js): App.apiの呼び先がローカルAPIに差し替わっている以外は
        既存のまま。振り返り(reflections.js)・日報ログ(nippo-log.js)は非ゴールのため

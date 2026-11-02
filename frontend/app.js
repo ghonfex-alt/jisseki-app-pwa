@@ -330,8 +330,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   await _loadStoreInfo();
 
-  const _licenseStatus = await App.api("GET", "/license/status").catch(() => ({ activated: false }));
-  if (!_licenseStatus.activated || window._storeIds.length === 0) {
+  if (window._storeIds.length === 0) {
     App.go("setup");
     return;
   }

@@ -1,13 +1,21 @@
 // frontend/setup.js — 初回セットアップ画面。
-// ライセンスキー未入力 or 店舗が0件の場合、App起動時にこの画面へ誘導する。
+// 店舗が0件の場合、App起動時にこの画面へ誘導する。
 //
 // 2026-11-02改訂: 「ライセンスキー→店舗名→完了」の3画面がただ縦に並んでいる
 // だけで、どこまで進んだか分からず、しかも「ホーム画面に追加」の案内は
 // README(アプリの外)にしか無かった。ユーザーから「導線・使い勝手を突き詰めろ」
 // との指示を受け、ステップ表示付きのウィザード形式に作り直し、ホーム画面追加の
 // 案内をアプリ内の正式なステップとして組み込む。
+//
+// 2026-11-02 追記: Cloudflare Access(買い手のメールアドレス単位でログイン
+// 自体をブロックする)を導入したことで、このページのJSに到達できている時点で
+// 既にアクセス許可済みの買い手であることが保証される。local/license.jsの
+// クライアント側ライセンスキー認証はAccessに対して何の追加の安全性も提供
+// しない(むしろ公開ソース中のハッシュを読める・買い手が最初に入力する手間が
+// 増えるだけ)ため撤去し、ウィザードを「店舗名→ホーム画面→完了」の3段階に
+// 短縮した。
 
-// _setupStep: 1=ライセンス, 2=店舗名, 3=ホーム画面に追加, 4=完了
+// _setupStep: 1=店舗名, 2=ホーム画面に追加, 3=完了
 let _setupStep = 1;
 
 function _isStandalone() {
@@ -25,22 +33,20 @@ function _isIOS() {
 
 App.register("setup", async function() {
   const main = document.getElementById("main");
-  const licenseStatus = await App.api("GET", "/license/status");
   const stores = await App.api("GET", "/stores");
 
   // 既に完了済みの項目があれば、該当ステップを飛ばして次へ進める
-  // (例: ライセンス認証済みだが店舗未作成の状態で再度この画面に来た場合)。
-  if (licenseStatus.activated) _setupStep = Math.max(_setupStep, 2);
-  if (Object.keys(stores).length > 0) _setupStep = Math.max(_setupStep, 3);
-  // 既にホーム画面(スタンドアロン)から開いている場合、ステップ3の案内は
+  // (例: 店舗は作成済みだがホーム画面未追加の状態で再度この画面に来た場合)。
+  if (Object.keys(stores).length > 0) _setupStep = Math.max(_setupStep, 2);
+  // 既にホーム画面(スタンドアロン)から開いている場合、ステップ2の案内は
   // 意味が無いので自動的に完了扱いにする。
-  if (_isStandalone()) _setupStep = Math.max(_setupStep, 4);
+  if (_isStandalone()) _setupStep = Math.max(_setupStep, 3);
 
   _renderSetup();
 });
 
 function _setupStepDotsInner() {
-  const labels = ["①認証", "②店舗", "③ホーム画面", "④完了"];
+  const labels = ["①店舗", "②ホーム画面", "③完了"];
   return labels.map((label, i) => {
     const n = i + 1;
     const active = n === _setupStep;
@@ -68,7 +74,7 @@ function _renderSetup() {
   main.innerHTML = `
     <div style="max-width:420px;margin:32px auto;padding:24px;background:#1f2937;border-radius:12px;">
       <h2 style="margin-top:0;margin-bottom:4px;">初期セットアップ</h2>
-      <div style="color:#6b7280;font-size:12px;margin-bottom:16px;">4つのステップで準備完了です</div>
+      <div style="color:#6b7280;font-size:12px;margin-bottom:16px;">3つのステップで準備完了です</div>
       <div id="setup-step-dots" style="display:flex;gap:6px;margin-bottom:20px;">${_setupStepDotsInner()}</div>
       <div id="setup-step-body"></div>
     </div>`;
@@ -84,19 +90,6 @@ function _renderSetupStepBody() {
   if (!body) return;
   if (_setupStep === 1) {
     body.innerHTML = `
-      <div class="label">ライセンスキー</div>
-      <div style="color:#6b7280;font-size:11px;margin-bottom:8px;">お渡しした認証キーを入力してください</div>
-      <input type="text" id="setup-license-key" placeholder="XXXX-XXXX-XXXX" style="width:100%;margin-bottom:8px;box-sizing:border-box;">
-      <button onclick="setupActivateLicense()" class="btn-primary" style="width:100%;">認証する</button>
-      <div id="setup-license-msg" style="color:#f87171;font-size:12px;margin-top:8px;"></div>
-    `;
-    const input = document.getElementById("setup-license-key");
-    if (input) {
-      input.focus();
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") setupActivateLicense(); });
-    }
-  } else if (_setupStep === 2) {
-    body.innerHTML = `
       <div class="label">店舗名</div>
       <div style="color:#6b7280;font-size:11px;margin-bottom:8px;">あとから設定画面で店舗を追加・変更できます</div>
       <input type="text" id="setup-store-name" placeholder="例: 〇〇バー" style="width:100%;margin-bottom:8px;box-sizing:border-box;">
@@ -108,7 +101,7 @@ function _renderSetupStepBody() {
       input.focus();
       input.addEventListener("keydown", (e) => { if (e.key === "Enter") setupCreateStore(); });
     }
-  } else if (_setupStep === 3) {
+  } else if (_setupStep === 2) {
     body.innerHTML = _setupHomeScreenStepHtml();
   } else {
     body.innerHTML = `
@@ -121,7 +114,7 @@ function _renderSetupStepBody() {
   }
 }
 
-// ── ステップ3: ホーム画面に追加 ──────────────────────────────────────────
+// ── ステップ2: ホーム画面に追加 ──────────────────────────────────────────
 // 2026-11-02新設。従来はREADME(アプリの外)にしか案内が無く、スタッフが
 // 「ホーム画面に追加」を飛ばしてSafariのタブのまま使い続けると、iOSの
 // 7日間ストレージ削除ルールの対象になってしまう(ホーム画面アプリとして
@@ -204,21 +197,8 @@ async function _setupInstallNow() {
 }
 
 function _setupHomeScreenNext() {
-  _setupStep = 4;
+  _setupStep = 3;
   _renderSetupStepBody();
-}
-
-async function setupActivateLicense() {
-  const key = document.getElementById("setup-license-key").value.trim();
-  const msg = document.getElementById("setup-license-msg");
-  try {
-    await App.api("POST", "/license/activate", { key });
-    msg.textContent = "";
-    _setupStep = 2;
-    _renderSetupStepBody();
-  } catch (e) {
-    msg.textContent = "ライセンスキーが正しくありません。";
-  }
 }
 
 // 二重クリックで同名の店舗が2つ作られるのを防ぐ(settings.js::addStoreと同じ理由。
@@ -237,7 +217,7 @@ async function setupCreateStore() {
     await App.api("POST", "/stores", { id, name });
     msg.textContent = "";
     // 既にホーム画面から起動済みなら、案内ステップを飛ばして完了へ。
-    _setupStep = _isStandalone() ? 4 : 3;
+    _setupStep = _isStandalone() ? 3 : 2;
     _renderSetupStepBody();
   } catch (e) {
     msg.textContent = "店舗の作成に失敗しました: " + e.message;

@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v8';
+const CACHE = 'jisseki-pwa-v9';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に
@@ -52,7 +52,6 @@ const CORE_ASSETS = [
   '../local/inventory.js',
   '../local/targets.js',
   '../local/settings.js',
-  '../local/license.js',
 ];
 
 // SheetJS(CDN、Excel出力専用)。ピン留めバージョンはindex.htmlの<script src>と
