@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v10';
+const CACHE = 'jisseki-pwa-v11';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に
@@ -113,20 +113,27 @@ self.addEventListener('fetch', (e) => {
       if (cached) return cached;
 
       try {
-        // ナビゲーション(画面遷移)リクエストはe.requestをそのままfetch()に渡さない。
-        // navigateモードのRequestはredirectモードを'follow'に変更できない仕様があり、
-        // Cloudflare Pagesの"/frontend/index.html"→"/frontend/"のような同一オリジンの
-        // パス正規化リダイレクトを経由した結果(res.redirected===true)をそのまま
-        // respondWith()に渡すと、ブラウザが"a redirected response was used for a
-        // request whose redirect mode is not 'follow'"でナビゲーション自体をERR_FAILED
-        // にする(2026-11-06、Cloudflare Access経由かどうかに関係なく素のPages配下でも
-        // 再現する実機バグと確定。DevToolsのConsoleで直接確認済み)。
-        // 対策: URL文字列から独立した新規Requestでfetchし(navigateモードの制約を
-        // 引き継がない)、redirect:'follow'を明示する。Cloudflare Accessの認証Cookieを
-        // 乗せるためcredentials:'same-origin'も明示する。
+        // ナビゲーション(画面遷移)リクエストのrespondWith()には、
+        // res.redirected===trueな応答を絶対に渡してはいけない仕様がある
+        // (navigateモードのFetchEventのrequest.redirectは常に'manual'固定で、
+        // 'follow'に変更する手段が無いため——{redirect:'follow'}を明示して
+        // 自前でリダイレクトを辿っても、辿った後の応答のredirectedフラグは
+        // trueのままで同じ違反になる。実機で実際に検証し、"follow"指定でも
+        // 直らないことを確認済み)。Cloudflare Pagesの"/frontend/index.html"→
+        // "/frontend/"のような同一オリジンのパス正規化リダイレクトだけでも
+        // 発生し、ブラウザが"a redirected response was used for a request
+        // whose redirect mode is not 'follow'"でナビゲーション自体を
+        // ERR_FAILEDにする(2026-11-06、DevToolsのConsoleで実機確認済み)。
+        // 正しい対処: redirect:'manual'を明示し、応答がリダイレクトなら
+        // (type==='opaqueredirect')それをそのまま返す。ブラウザ自身が
+        // その応答を見て新しいナビゲーションとしてLocation先に飛び直す
+        // (飛び直した先への新しいfetchイベントは、このSWに改めて飛んでくる)。
         const res = e.request.mode === 'navigate'
-          ? await fetch(e.request.url, { credentials: 'same-origin', redirect: 'follow' })
+          ? await fetch(e.request.url, { credentials: 'same-origin', redirect: 'manual' })
           : await fetch(e.request);
+        if (res && res.type === 'opaqueredirect') {
+          return res;
+        }
         // 初回アクセスでキャッシュに無かったもの(例: install時に失敗したCDN資産)を
         // 取得できた時点でキャッシュに積んでおく。opaque応答(type==='opaque')は
         // 内容を検証できないため保存しない。
