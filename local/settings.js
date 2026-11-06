@@ -8,7 +8,7 @@
  * local-api.js → local/store.js → local/staff.js → local/daily.js →
  * local/tax-table-r8.js → local/payroll.js → local/payroll-admin.js →
  * local/shifts.js → local/inventory.js → local/targets.js →
- * local/settings.js → local/license.js を想定)。
+ * local/settings.js を想定)。
  *
  * Node.js (tests/setup.js 経由の環境) でも
  * require("../db.js"); require("../local-api.js"); require("../local/settings.js");

@@ -182,8 +182,11 @@ async function _setupInstallNow() {
     if (msg) msg.textContent = "お使いのブラウザのメニューから「ホーム画面に追加」を選んでください。";
     return;
   }
-  prompt.prompt();
   try {
+    // prompt()自体も同期的にInvalidStateError等を投げうる(例: 既に使用済みの
+    // イベントを誤って再利用した場合)。try内に含めないとここで未捕捉の例外になり、
+    // ボタンが何の反応もせず固まって見える(2026-11-06、audit-loopで発見)。
+    prompt.prompt();
     const choice = await prompt.userChoice;
     window._deferredInstallPrompt = null;
     if (choice && choice.outcome === "accepted") {
@@ -191,7 +194,9 @@ async function _setupInstallNow() {
       return;
     }
   } catch (e) {
-    // ユーザーがダイアログを閉じた等。次へ進むボタンはそのまま使える。
+    // ユーザーがダイアログを閉じた、または上記のprompt()失敗等。次へ進むボタンは
+    // そのまま使えるようにする。
+    window._deferredInstallPrompt = null;
   }
   if (msg) msg.textContent = "いつでも後から追加できます。";
 }

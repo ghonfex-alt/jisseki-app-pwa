@@ -318,8 +318,6 @@ async function _showBackupImportConfirmModal() {
       <div style="font-size:13px;color:#d1d5db;margin-bottom:16px;">
         現在アプリに保存されている全データ（店舗・スタッフ・実績・シフト・在庫・設定など）が、
         選択したファイルの内容で上書きされます。この操作は元に戻せません。
-        （ライセンス認証情報だけは対象外です。新しい端末やアプリの再インストール後に
-        このバックアップを読み込む場合は、別途ライセンスキーを入力してください）
       </div>
       <div style="display:flex;gap:8px;">
         <button onclick="_cancelBackupImport()"
@@ -433,7 +431,12 @@ async function deleteStore(storeId) {
   try {
     await App.api("DELETE", `/stores/${storeId}`);
     await window._loadStoreInfo?.();
-    App.go("settings");
+    // 最後の1店舗を削除すると店舗数が0になる。設定画面の「店舗を追加」フォームに
+    // 偶然たどり着けてしまう形で復旧させるのではなく、本来の初回セットアップ導線
+    // (frontend/app.jsの起動ゲートと同じ判定)へ正式に戻す(2026-11-06、audit-loopで
+    // 発見: 店舗0件のまま設定画面に居座れてしまい、他画面が無店舗状態を
+    // 想定していない不具合の回帰防止)。
+    App.go((window._storeIds || []).length === 0 ? "setup" : "settings");
   } catch (e) {
     _showToast?.("⚠️ 削除失敗: " + e.message);
     App.go("settings");
