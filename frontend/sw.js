@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v14';
+const CACHE = 'jisseki-pwa-v15';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に
@@ -135,12 +135,19 @@ self.addEventListener('fetch', (e) => {
           // 正しい対処はredirect:'manual'を明示し、応答が
           // type==='opaqueredirect'ならそのまま返すこと。ブラウザ自身がその
           // 応答を見て新しいナビゲーションとしてLocation先に飛び直す。
-          const res = await fetch(e.request.url, { credentials: 'same-origin', redirect: 'manual' });
+          // e.request(URL文字列ではなくRequestオブジェクトそのもの)を渡すことで、
+          // credentials等の元リクエストの属性をできる限り保持する
+          // (2回目のaudit-loopで指摘・2026-11-07修正)。
+          const res = await fetch(e.request, { redirect: 'manual' });
           return res;
         } catch (err) {
-          // オフラインでネットワークに到達できない場合のみ、SPAシェル
-          // (index.html)にフォールバックする。
-          const fallback = await caches.match('./index.html');
+          // オフラインでネットワークに到達できない場合のみ、SPAシェルに
+          // フォールバックする。要求されたURL自体がキャッシュ済みならそれを
+          // 優先する(例: shift.htmlへの直接アクセスがindex.htmlの内容に
+          // すり替わらないように。2回目のaudit-loopで発見・2026-11-07修正)。
+          // 該当ページ自体が未キャッシュの場合のみindex.html(SPAシェル)に
+          // フォールバックする。
+          const fallback = (await caches.match(e.request)) || (await caches.match('./index.html'));
           if (fallback) return fallback;
           throw err;
         }
