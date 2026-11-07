@@ -88,12 +88,21 @@ async function main() {
 
   if (command === 'grant') {
     const existing = await kvGet();
+    if (existing?.paid) {
+      console.log(`${email} は既に支払い済み(${existing.paid_at})です。grantは新規お試し発行用のため、既存の支払い済み状態を壊さないよう何もしませんでした。`);
+      console.log('コードを再発行したいだけなら、先に status で現状を確認してから進めてください。');
+      return;
+    }
     const code = randomCode();
+    // started_at・paid・paid_atは既存レコードの値を常に引き継ぐ(新規レコードの
+    // 時だけ初期値を使う)。以前はpaid/paid_atを無条件でfalse/nullに上書きして
+    // おり、操作ミスでgrantを再実行すると既に支払い済みの買い手が未払い扱いに
+    // 戻ってしまう重大バグだった(audit-loopで発見・2026-11-07修正)。
     const record = {
       started_at: existing?.started_at || new Date().toISOString(),
       code_hash: sha256Hex(code),
-      paid: false,
-      paid_at: null,
+      paid: existing?.paid || false,
+      paid_at: existing?.paid_at || null,
     };
     await kvPut(record);
     console.log(`発行しました。`);

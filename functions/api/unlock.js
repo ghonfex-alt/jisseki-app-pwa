@@ -24,7 +24,12 @@ export async function onRequestPost(context) {
     return json({ error: '不正なリクエストです' }, 400);
   }
 
-  const code = typeof body?.code === 'string' ? body.code.trim() : '';
+  // trial-admin.jsが生成するコードは大文字のみ(ABCDEFGHJKMNPQRSTUVWXYZ23456789)。
+  // 画面側の入力欄はtext-transform:uppercaseで見た目だけ大文字にしているが、
+  // 実際に送信される値は入力したままなので、ここでtoUpperCase()しないと
+  // 小文字で入力した買い手が正しいコードでも弾かれるバグになる(audit-loopで
+  // 発見・2026-11-07修正)。
+  const code = typeof body?.code === 'string' ? body.code.trim().toUpperCase() : '';
   if (!code) {
     return json({ error: '解除コードを入力してください' }, 400);
   }

@@ -11,17 +11,48 @@
 // fetch()で同一オリジンの/api/*(Cloudflare Pages Functions)を直接呼ぶ
 // (App.apiはlocalApiCall固定で、ネットワークには出ない設計のため)。
 
-// 起動時に一度だけ呼ぶ。ネットワーク不通時はfail-open(App.jsの/settings取得と
-// 同じ方針——オフライン主体のPWAで、通信エラーのたびに全ユーザーを締め出す
-// わけにはいかない)。{expired:true}が明確に返ってきた場合だけブロックする。
-async function checkTrialStatus() {
+// サーバーから一度でも「期限切れ」と確認が取れた端末は、その事実をlocalStorageに
+// 残しておく。機内モード等で意図的にオフラインにするだけで期限切れを回避できて
+// しまうバイパスを防ぐため(audit-loopで発見・2026-11-07修正)。一度も確認が
+// 取れていない端末(新規インストール直後の通信不良等)は従来通りfail-open。
+const TRIAL_EXPIRED_CACHE_KEY = 'jisseki_trial_expired_cache';
+
+function _readCachedExpired() {
   try {
-    const res = await fetch('/api/trial-status', { credentials: 'same-origin' });
-    if (!res.ok) return null;
-    return await res.json();
+    const raw = localStorage.getItem(TRIAL_EXPIRED_CACHE_KEY);
+    return raw ? JSON.parse(raw).expired === true : false;
   } catch (e) {
-    console.warn('trial-status fetch failed (fail-open):', e);
-    return null;
+    return false;
+  }
+}
+
+function _writeCachedExpired(expired) {
+  try {
+    localStorage.setItem(TRIAL_EXPIRED_CACHE_KEY, JSON.stringify({ expired: !!expired, checked_at: new Date().toISOString() }));
+  } catch (e) {
+    // private browsing等でlocalStorageが使えない場合はキャッシュを諦めるだけ
+    // (fail-openの既存挙動に戻る)。
+  }
+}
+
+// 起動時に一度だけ呼ぶ。通信エラー時は直近に確認できた状態を踏まえて判定する
+// (未確認ならfail-open、直近「期限切れ」確認済みならfail-closed)。
+// 8秒でタイムアウトし、応答の遅いネットワークでアプリ起動がフリーズするのを防ぐ
+// (audit-loopで発見・2026-11-07修正)。
+async function checkTrialStatus() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch('/api/trial-status', { credentials: 'same-origin', signal: controller.signal });
+    if (!res.ok) return _readCachedExpired() ? { expired: true } : null;
+    const data = await res.json();
+    _writeCachedExpired(data && data.expired);
+    return data;
+  } catch (e) {
+    console.warn('trial-status fetch failed:', e);
+    return _readCachedExpired() ? { expired: true } : null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 window.checkTrialStatus = checkTrialStatus;
@@ -33,7 +64,8 @@ App.register("trial-ended", function () {
       <h2 style="margin-top:0;margin-bottom:4px;">お試し期間が終了しました</h2>
       <div style="color:#6b7280;font-size:12px;margin-bottom:16px;line-height:1.6;">
         これまでに入力したデータは消えていません。購入後の解除コードを入力すると、
-        そのまま続きから使えます。
+        そのまま続きから使えます。解除コードがまだの方・ご不明な点がある方は、
+        ご購入時にご案内の連絡先までお問い合わせください。
       </div>
       <input type="text" id="trial-unlock-code" placeholder="XXXX-XXXX" style="width:100%;margin-bottom:8px;box-sizing:border-box;text-transform:uppercase;">
       <button onclick="submitTrialUnlock()" class="btn-primary" style="width:100%;">解除する</button>
@@ -52,7 +84,7 @@ async function submitTrialUnlock() {
   if (_trialUnlockInFlight) return;
   const input = document.getElementById("trial-unlock-code");
   const msg = document.getElementById("trial-unlock-msg");
-  const code = (input?.value || "").trim();
+  const code = (input?.value || "").trim().toUpperCase();
   if (!code) { if (msg) msg.textContent = "解除コードを入力してください。"; return; }
   _trialUnlockInFlight = true;
   try {
@@ -65,6 +97,7 @@ async function submitTrialUnlock() {
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.ok) {
       if (msg) { msg.style.color = '#4ade80'; msg.textContent = '解除しました。'; }
+      _writeCachedExpired(false);
       await window._loadStoreInfo();
       App.go(window._storeIds.length === 0 ? "setup" : "summary");
       return;

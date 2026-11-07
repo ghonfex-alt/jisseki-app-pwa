@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v13';
+const CACHE = 'jisseki-pwa-v14';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に
@@ -107,28 +107,47 @@ self.addEventListener('fetch', (e) => {
   // non-GET(このアプリはGETのみ使う想定だが念のため)はスルーし、ブラウザの通常動作に委ねる。
   if (e.request.method !== 'GET') return;
 
-  // ナビゲーション(画面遷移)リクエストはSWで一切intercept しない(2026-11-07、
-  // redirect:'manual'+opaqueredirect pass-throughによる対処から方針変更)。
+  // 🚨2026-11-07(2回目の変更): ナビゲーション(画面遷移)を一切intercept しない
+  // 方針は、audit-loopのバグハントで「オフライン状態でのホーム画面アイコン起動が
+  // 失敗する」致命的な退行を生むと確定したため撤回した(アイコンタップでの起動も
+  // navigateモードのリクエストであり、「アプリ起動後はクライアント側ルーティング
+  // のみ」という当初の前提は起動そのものを見落としていた)。
   //
-  // 理由: 「新しいSW(v12)のコードは正しい」ことをDevTools Sourcesで確認した
-  // 直後にも関わらず、同じERR_FAILED("a redirected response was used for a
-  // request whose redirect mode is not 'follow'")が実機で再発した。原因は
-  // コードの誤りではなく、SWの更新(install→activate→clients.claim)が完了する
-  // 前のタイミングで新しいナビゲーションが飛んでくると、まだ古い版のfetch
-  // ハンドラがそのナビゲーションを処理してしまう競合(タイミング依存で再現性が
-  // 不安定)と推測される。この種のタイミング競合を完全に塞ぎ込むより、
-  // そもそも「SWがナビゲーションに手を出さない」設計にする方が頑丈(ブラウザの
-  // 素のナビゲーション処理は、Cloudflare Pagesのパス正規化リダイレクトや
-  // Cloudflare Accessのログインリダイレクトを、curl/PowerShellでの素の
-  // リクエストと同様、常に問題なく処理できることを本セッションで確認済み)。
-  //
-  // トレードオフ: オフライン時の「直接URLへの再読み込み(F5)」はキャッシュに
-  // フォールバックできなくなる(ブラウザ標準のオフライン画面になる)。
-  // ただしこのアプリは起動後は index.html 内でApp.go()によるクライアント側
-  // ルーティングのみを行い、ブラウザの実ナビゲーションは発生しない設計のため、
-  // 実運用上の影響は「アプリを開いた状態のまま電波が切れても使える」という
-  // 本来のオフライン要件には影響しない。
-  if (e.request.mode === 'navigate') return;
+  // 元々navigateを一切intercept しないようにした理由(再発したERR_FAILED)は、
+  // redirect:'manual'+opaqueredirect pass-through自体のコードが誤っていた
+  // からではなく、デプロイ直後の限られたタイミング(SWのinstall→activate→
+  // clients.claim完了前に新しいナビゲーションが来てしまう競合)が疑われる
+  // ケースだった。この種のタイミング問題は仮に発生しても次回起動で自然に
+  // 解消する(通常の買い手はデプロイ直後の数秒間に限ってアプリを開き直す
+  // ことはない)ため、「ほぼ全ての起動でオフライン対応が壊れる」退行より
+  // 許容できるリスクと判断し、下記のredirect:'manual'+opaqueredirect
+  // pass-through方式(実機で完全なログイン〜初期セットアップ完了まで動作
+  // 確認済み)に戻す。
+  if (e.request.mode === 'navigate') {
+    e.respondWith(
+      (async () => {
+        try {
+          // navigateモードのFetchEventのrequest.redirectは常に'manual'固定で
+          // 'follow'に変更する手段が無い。{redirect:'follow'}を明示して自前で
+          // リダイレクトを辿っても、辿った後の応答のredirectedフラグはtrueの
+          // ままで「a redirected response was used for a request whose
+          // redirect mode is not 'follow'」のERR_FAILEDになる(実機で検証済み)。
+          // 正しい対処はredirect:'manual'を明示し、応答が
+          // type==='opaqueredirect'ならそのまま返すこと。ブラウザ自身がその
+          // 応答を見て新しいナビゲーションとしてLocation先に飛び直す。
+          const res = await fetch(e.request.url, { credentials: 'same-origin', redirect: 'manual' });
+          return res;
+        } catch (err) {
+          // オフラインでネットワークに到達できない場合のみ、SPAシェル
+          // (index.html)にフォールバックする。
+          const fallback = await caches.match('./index.html');
+          if (fallback) return fallback;
+          throw err;
+        }
+      })()
+    );
+    return;
+  }
 
   // /api/*(functions/api/*.js、Cloudflare Pages Functions)はcache-firstの
   // 対象から完全に除外し、常にネットワークへ素通しする(2026-11-07追加)。
