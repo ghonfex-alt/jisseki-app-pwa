@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v12';
+const CACHE = 'jisseki-pwa-v13';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に
@@ -107,6 +107,29 @@ self.addEventListener('fetch', (e) => {
   // non-GET(このアプリはGETのみ使う想定だが念のため)はスルーし、ブラウザの通常動作に委ねる。
   if (e.request.method !== 'GET') return;
 
+  // ナビゲーション(画面遷移)リクエストはSWで一切intercept しない(2026-11-07、
+  // redirect:'manual'+opaqueredirect pass-throughによる対処から方針変更)。
+  //
+  // 理由: 「新しいSW(v12)のコードは正しい」ことをDevTools Sourcesで確認した
+  // 直後にも関わらず、同じERR_FAILED("a redirected response was used for a
+  // request whose redirect mode is not 'follow'")が実機で再発した。原因は
+  // コードの誤りではなく、SWの更新(install→activate→clients.claim)が完了する
+  // 前のタイミングで新しいナビゲーションが飛んでくると、まだ古い版のfetch
+  // ハンドラがそのナビゲーションを処理してしまう競合(タイミング依存で再現性が
+  // 不安定)と推測される。この種のタイミング競合を完全に塞ぎ込むより、
+  // そもそも「SWがナビゲーションに手を出さない」設計にする方が頑丈(ブラウザの
+  // 素のナビゲーション処理は、Cloudflare Pagesのパス正規化リダイレクトや
+  // Cloudflare Accessのログインリダイレクトを、curl/PowerShellでの素の
+  // リクエストと同様、常に問題なく処理できることを本セッションで確認済み)。
+  //
+  // トレードオフ: オフライン時の「直接URLへの再読み込み(F5)」はキャッシュに
+  // フォールバックできなくなる(ブラウザ標準のオフライン画面になる)。
+  // ただしこのアプリは起動後は index.html 内でApp.go()によるクライアント側
+  // ルーティングのみを行い、ブラウザの実ナビゲーションは発生しない設計のため、
+  // 実運用上の影響は「アプリを開いた状態のまま電波が切れても使える」という
+  // 本来のオフライン要件には影響しない。
+  if (e.request.mode === 'navigate') return;
+
   // /api/*(functions/api/*.js、Cloudflare Pages Functions)はcache-firstの
   // 対象から完全に除外し、常にネットワークへ素通しする(2026-11-07追加)。
   // 特に/api/trial-statusをキャッシュしてしまうと、お試し期限切れの判定が
@@ -120,45 +143,15 @@ self.addEventListener('fetch', (e) => {
       const cached = await caches.match(e.request);
       if (cached) return cached;
 
-      try {
-        // ナビゲーション(画面遷移)リクエストのrespondWith()には、
-        // res.redirected===trueな応答を絶対に渡してはいけない仕様がある
-        // (navigateモードのFetchEventのrequest.redirectは常に'manual'固定で、
-        // 'follow'に変更する手段が無いため——{redirect:'follow'}を明示して
-        // 自前でリダイレクトを辿っても、辿った後の応答のredirectedフラグは
-        // trueのままで同じ違反になる。実機で実際に検証し、"follow"指定でも
-        // 直らないことを確認済み)。Cloudflare Pagesの"/frontend/index.html"→
-        // "/frontend/"のような同一オリジンのパス正規化リダイレクトだけでも
-        // 発生し、ブラウザが"a redirected response was used for a request
-        // whose redirect mode is not 'follow'"でナビゲーション自体を
-        // ERR_FAILEDにする(2026-11-06、DevToolsのConsoleで実機確認済み)。
-        // 正しい対処: redirect:'manual'を明示し、応答がリダイレクトなら
-        // (type==='opaqueredirect')それをそのまま返す。ブラウザ自身が
-        // その応答を見て新しいナビゲーションとしてLocation先に飛び直す
-        // (飛び直した先への新しいfetchイベントは、このSWに改めて飛んでくる)。
-        const res = e.request.mode === 'navigate'
-          ? await fetch(e.request.url, { credentials: 'same-origin', redirect: 'manual' })
-          : await fetch(e.request);
-        if (res && res.type === 'opaqueredirect') {
-          return res;
-        }
-        // 初回アクセスでキャッシュに無かったもの(例: install時に失敗したCDN資産)を
-        // 取得できた時点でキャッシュに積んでおく。opaque応答(type==='opaque')は
-        // 内容を検証できないため保存しない。
-        if (res && res.ok && (res.type === 'basic' || res.type === 'cors')) {
-          const cache = await caches.open(CACHE);
-          cache.put(e.request, res.clone());
-        }
-        return res;
-      } catch (err) {
-        // オフラインでキャッシュにも無い場合: 画面遷移(ナビゲーション)だけは
-        // SPAシェル(index.html)にフォールバックする。
-        if (e.request.mode === 'navigate') {
-          const fallback = await caches.match('./index.html');
-          if (fallback) return fallback;
-        }
-        throw err;
+      const res = await fetch(e.request);
+      // 初回アクセスでキャッシュに無かったもの(例: install時に失敗したCDN資産)を
+      // 取得できた時点でキャッシュに積んでおく。opaque応答(type==='opaque')は
+      // 内容を検証できないため保存しない。
+      if (res && res.ok && (res.type === 'basic' || res.type === 'cors')) {
+        const cache = await caches.open(CACHE);
+        cache.put(e.request, res.clone());
       }
+      return res;
     })()
   );
 });
