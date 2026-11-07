@@ -8,7 +8,7 @@
 // デプロイごとにCACHEの末尾の数字を上げること(例: v1 → v2)。
 // activateイベントで、新しい番号と一致しない古いキャッシュを破棄する(旧shift-sw.jsの
 // バージョニング方式を踏襲)。
-const CACHE = 'jisseki-pwa-v11';
+const CACHE = 'jisseki-pwa-v12';
 
 // コアアセット: 1つでも取得に失敗したらSW自体のインストールを失敗させる
 // (cache.addAllは原子的)。index.html/shift.htmlの<script>/<link>タグに実際に
@@ -28,6 +28,7 @@ const CORE_ASSETS = [
 
   // frontend/*.js (index.htmlの画面側スクリプト一覧と一致させる)
   './app.js',
+  './trial.js',
   './setup.js',
   './summary.js',
   './settings.js',
@@ -105,6 +106,13 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   // non-GET(このアプリはGETのみ使う想定だが念のため)はスルーし、ブラウザの通常動作に委ねる。
   if (e.request.method !== 'GET') return;
+
+  // /api/*(functions/api/*.js、Cloudflare Pages Functions)はcache-firstの
+  // 対象から完全に除外し、常にネットワークへ素通しする(2026-11-07追加)。
+  // 特に/api/trial-statusをキャッシュしてしまうと、お試し期限切れの判定が
+  // 最初の1回の応答のまま一生更新されなくなり、判定機能そのものが無意味になる。
+  const url = new URL(e.request.url);
+  if (url.pathname.startsWith('/api/')) return;
 
   e.respondWith(
     (async () => {

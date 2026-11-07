@@ -29,6 +29,7 @@ jobs:
           rsync -a --exclude='.git' --exclude='node_modules' --exclude='.github' \
             --exclude='_site' --exclude='tests' --exclude='.superpowers' \
             --exclude='docs' --exclude='package.json' --exclude='package-lock.json' \
+            --exclude='scripts' \
             ./ _site/
 
       # 公式cloudflare/pages-actionは非推奨(メンテナンス終了)のため、

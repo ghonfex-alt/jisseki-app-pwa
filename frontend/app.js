@@ -330,6 +330,15 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   await _loadStoreInfo();
 
+  // 2026-11-07追加: お試し期間(登録から30日)が切れていないか確認する
+  // (frontend/trial.js参照)。setup画面より先に判定する——お試し中に
+  // セットアップをやり直されても、期限切れなら必ずこの画面で止める。
+  const trialStatus = await checkTrialStatus();
+  if (trialStatus && trialStatus.expired) {
+    App.go("trial-ended");
+    return;
+  }
+
   if (window._storeIds.length === 0) {
     App.go("setup");
     return;
